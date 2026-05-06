@@ -28,10 +28,10 @@ BUCKET_REPORTS_KEY = "oci-monitor/reports/{ts}.json"
 _lock = threading.Lock()
 _state: dict = {}
 
-_tenancy_slug        = ""   # used in console URLs
-_account_label       = ""   # display name in messages (compartment name or OCI_ACCOUNT_LABEL)
-_availability_domain = ""
-_os_namespace        = ""   # OCI Object Storage tenancy namespace
+_tenancy_slug         = ""    # used in console URLs
+_account_label        = ""    # display name in messages (compartment name or OCI_ACCOUNT_LABEL)
+_availability_domains: list[str] = []
+_os_namespace         = ""    # OCI Object Storage tenancy namespace
 
 DEFAULTS = {
     "cost_threshold":      float(os.environ.get("COST_THRESHOLD_GBP", "5.0")),
@@ -152,10 +152,10 @@ def fetch_tenancy_info(config: dict) -> tuple[str, str]:
     return t.name, label
 
 
-def fetch_availability_domain(config: dict) -> str:
+def fetch_availability_domains(config: dict) -> list[str]:
     client = oci.identity.IdentityClient(config)
     ads = client.list_availability_domains(compartment_id=TENANCY_OCID).data
-    return ads[0].name if ads else ""
+    return [ad.name for ad in ads]
 
 
 def fetch_os_namespace(config: dict) -> str:
@@ -201,28 +201,31 @@ def orphaned_public_ips(config: dict) -> list[dict]:
 
 
 def orphaned_boot_volumes(config: dict) -> list[dict]:
-    if not _availability_domain:
+    if not _availability_domains:
         return []
     bv_client = oci.core.BlockstorageClient(config)
     compute_client = oci.core.ComputeClient(config)
-    vols = oci.pagination.list_call_get_all_results(
-        bv_client.list_boot_volumes,
-        availability_domain=_availability_domain,
-        compartment_id=COMPARTMENT_OCID,
-    ).data
-    available = [v for v in vols if v.lifecycle_state == "AVAILABLE"]
-    if not available:
-        return []
-    attachments = oci.pagination.list_call_get_all_results(
-        compute_client.list_boot_volume_attachments,
-        availability_domain=_availability_domain,
-        compartment_id=COMPARTMENT_OCID,
-    ).data
-    attached_ids = {a.boot_volume_id for a in attachments if a.lifecycle_state == "ATTACHED"}
-    return [
-        {"id": v.id, "name": v.display_name, "size_gb": v.size_in_gbs}
-        for v in available if v.id not in attached_ids
-    ]
+    result = []
+    for ad in _availability_domains:
+        vols = oci.pagination.list_call_get_all_results(
+            bv_client.list_boot_volumes,
+            availability_domain=ad,
+            compartment_id=COMPARTMENT_OCID,
+        ).data
+        available = [v for v in vols if v.lifecycle_state == "AVAILABLE"]
+        if not available:
+            continue
+        attachments = oci.pagination.list_call_get_all_results(
+            compute_client.list_boot_volume_attachments,
+            availability_domain=ad,
+            compartment_id=COMPARTMENT_OCID,
+        ).data
+        attached_ids = {a.boot_volume_id for a in attachments if a.lifecycle_state == "ATTACHED"}
+        result += [
+            {"id": v.id, "name": v.display_name, "size_gb": v.size_in_gbs}
+            for v in available if v.id not in attached_ids
+        ]
+    return result
 
 
 def orphaned_block_volumes(config: dict) -> list[dict]:
@@ -596,7 +599,7 @@ def poll_commands(key_file_path: str) -> None:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    global _tenancy_slug, _account_label, _availability_domain, _os_namespace
+    global _tenancy_slug, _account_label, _availability_domains, _os_namespace
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
         f.write(API_KEY_PEM)
@@ -610,7 +613,7 @@ def main() -> None:
         except Exception:
             pass
         try:
-            _availability_domain = fetch_availability_domain(config)
+            _availability_domains = fetch_availability_domains(config)
         except Exception:
             pass
         try:

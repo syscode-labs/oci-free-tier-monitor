@@ -8,6 +8,9 @@ Active OCI cost and resource monitor with Telegram alerts and auto-cleanup. Runs
 - **Load balancer count** — alerts when active LBs exceed the free tier limit
 - **Orphaned reserved public IPs** — detects and auto-deletes unassigned IPs burning budget
 - **Orphaned volumes** — detects and auto-deletes unattached boot/block volumes
+- **Volume backup scan** — detects unexpected backups consuming storage quota
+- **Custom image scan** — detects unused imported images taking up Object Storage
+- **Object Storage usage** — tracks total bucket usage against the 20 GB free tier limit
 - **Auto-cleanup** — enabled by default; deletes orphans automatically each check cycle
 - **Telegram bot commands** — `/status`, `/scan`, `/autocleanup`, `/threshold`, `/silence`, and more
 - **State persistence** — preferences saved to OCI Object Storage with local fallback
@@ -46,6 +49,7 @@ docker run -d \
 | `COST_THRESHOLD_GBP` | | `5.0` | Monthly spend threshold in GBP |
 | `MAX_LB_COUNT` | | `1` | Max allowed active load balancers |
 | `MAX_FREE_PUBLIC_IPS` | | `2` | Unassigned reserved IPs before alerting (OCI free tier: 2) |
+| `MAX_OBJECT_STORAGE_GB` | | `18.0` | Object Storage alert threshold in GB (free tier limit: 20 GB) |
 | `CHECK_INTERVAL_HOURS` | | `6` | How often to run checks |
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |
 | `OCI_ACCOUNT_LABEL` | | compartment name | Display name shown in alerts and status messages (e.g. `oci@example.com-123456`) |
@@ -64,6 +68,11 @@ Allow group oci-monitor to read all-resources in compartment <your-compartment>
 Allow group oci-monitor to manage public-ips in compartment <your-compartment>
 Allow group oci-monitor to manage volumes in compartment <your-compartment>
 Allow group oci-monitor to manage boot-volumes in compartment <your-compartment>
+Allow group oci-monitor to inspect volume-backups in compartment <your-compartment>
+Allow group oci-monitor to inspect boot-volume-backups in compartment <your-compartment>
+Allow group oci-monitor to inspect images in compartment <your-compartment>
+Allow group oci-monitor to read buckets in compartment <your-compartment>
+Allow group oci-monitor to read objects in compartment <your-compartment>
 Allow group oci-monitor to manage objects in compartment <your-compartment>
   where target.bucket.name = '<your-state-bucket>'
 ```

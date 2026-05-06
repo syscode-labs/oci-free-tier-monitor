@@ -34,11 +34,12 @@ _availability_domains: list[str] = []
 _os_namespace         = ""    # OCI Object Storage tenancy namespace
 
 DEFAULTS = {
-    "cost_threshold":      float(os.environ.get("COST_THRESHOLD_GBP", "5.0")),
-    "max_lb_count":        int(os.environ.get("MAX_LB_COUNT", "1")),
-    "max_free_public_ips": int(os.environ.get("MAX_FREE_PUBLIC_IPS", "2")),
-    "silenced_month":      None,
-    "auto_cleanup":        True,
+    "cost_threshold":       float(os.environ.get("COST_THRESHOLD_GBP", "5.0")),
+    "max_lb_count":         int(os.environ.get("MAX_LB_COUNT", "1")),
+    "max_free_public_ips":  int(os.environ.get("MAX_FREE_PUBLIC_IPS", "2")),
+    "max_object_storage_gb": float(os.environ.get("MAX_OBJECT_STORAGE_GB", "18.0")),
+    "silenced_month":       None,
+    "auto_cleanup":         True,
 }
 
 HELP_TEXT = """\
@@ -239,6 +240,95 @@ def orphaned_block_volumes(config: dict) -> list[dict]:
     ]
 
 
+def volume_backups(config: dict) -> list[dict]:
+    client = oci.core.BlockstorageClient(config)
+    bv = oci.pagination.list_call_get_all_results(
+        client.list_boot_volume_backups,
+        compartment_id=COMPARTMENT_OCID,
+        lifecycle_state="AVAILABLE",
+    ).data
+    bk = oci.pagination.list_call_get_all_results(
+        client.list_volume_backups,
+        compartment_id=COMPARTMENT_OCID,
+        lifecycle_state="AVAILABLE",
+    ).data
+    return [
+        {
+            "id": b.id,
+            "name": b.display_name,
+            "size_gb": b.unique_size_in_gbs or 0,
+            "type": getattr(b, "source_type", None) or "MANUAL",
+            "kind": "boot",
+            "created": str(b.time_created)[:10],
+        }
+        for b in bv
+    ] + [
+        {
+            "id": b.id,
+            "name": b.display_name,
+            "size_gb": b.unique_size_in_gbs or 0,
+            "type": getattr(b, "source_type", None) or "MANUAL",
+            "kind": "block",
+            "created": str(b.time_created)[:10],
+        }
+        for b in bk
+    ]
+
+
+def custom_images(config: dict) -> list[dict]:
+    compute_client = oci.core.ComputeClient(config)
+    images = oci.pagination.list_call_get_all_results(
+        compute_client.list_images,
+        compartment_id=COMPARTMENT_OCID,
+    ).data
+    active_instances = oci.pagination.list_call_get_all_results(
+        compute_client.list_instances,
+        compartment_id=COMPARTMENT_OCID,
+    ).data
+    active_image_ids = {
+        i.image_id for i in active_instances
+        if i.lifecycle_state not in ("TERMINATED", "TERMINATING")
+    }
+    return [
+        {
+            "id": img.id,
+            "name": img.display_name,
+            "size_gb": round((img.size_in_mbs or 0) / 1024, 1),
+            "in_use": img.id in active_image_ids,
+        }
+        for img in images
+        if img.lifecycle_state == "AVAILABLE"
+    ]
+
+
+def object_storage_usage_gb(config: dict) -> float:
+    if not _os_namespace:
+        return 0.0
+    os_client = oci.object_storage.ObjectStorageClient(config)
+    buckets = oci.pagination.list_call_get_all_results(
+        os_client.list_buckets,
+        namespace_name=_os_namespace,
+        compartment_id=COMPARTMENT_OCID,
+    ).data
+    total_bytes = 0
+    for bucket in buckets:
+        try:
+            start = None
+            while True:
+                kwargs: dict = {"fields": "size"}
+                if start:
+                    kwargs["start"] = start
+                resp = os_client.list_objects(_os_namespace, bucket.name, **kwargs)
+                total_bytes += sum(obj.size or 0 for obj in (resp.data.objects or []))
+                if resp.data.next_start_with:
+                    start = resp.data.next_start_with
+                else:
+                    break
+        except Exception:
+            pass
+    return total_bytes / 1024 ** 3
+
+
 def compute_instances(config: dict) -> list[dict]:
     client = oci.core.ComputeClient(config)
     instances = oci.pagination.list_call_get_all_results(
@@ -371,6 +461,34 @@ def build_status_message(key_file_path: str) -> str:
     except Exception as e:
         lines.append(f"⚠️ Volumes: error — {e}")
 
+    try:
+        backups = volume_backups(config)
+        backup_gb = sum(b["size_gb"] for b in backups)
+        over = len(backups) > 0
+        breached = breached or over
+        lines.append(f"{'🚨' if over else '🗂️'} Backups: {len(backups)} ({backup_gb:.0f} GB){'  ⚠️' if over else ''}")
+    except Exception as e:
+        lines.append(f"⚠️ Backups: error — {e}")
+
+    try:
+        imgs = custom_images(config)
+        unused = [i for i in imgs if not i["in_use"]]
+        over = bool(unused)
+        breached = breached or over
+        label = f"{len(imgs)} ({len(unused)} unused  ⚠️)" if unused else (str(len(imgs)) if imgs else "none")
+        lines.append(f"{'🚨' if over else '🖼️'} Custom images: {label}")
+    except Exception as e:
+        lines.append(f"⚠️ Images: error — {e}")
+
+    try:
+        max_os = sget("max_object_storage_gb")
+        usage_gb = object_storage_usage_gb(config)
+        over = usage_gb > max_os
+        breached = breached or over
+        lines.append(f"{'🚨' if over else '🗄️'} Object Storage: {usage_gb:.1f} / {max_os:.0f} GB{'  ⚠️' if over else ''}")
+    except Exception as e:
+        lines.append(f"⚠️ Object Storage: error — {e}")
+
     if is_silenced():
         lines.append("🔕 Alerts silenced this month")
     lines.append(f"{'🤖' if auto else '🔧'} Auto-cleanup: {'on' if auto else 'off'}")
@@ -420,6 +538,41 @@ def build_scan_message(key_file_path: str) -> str:
             lines.append("\n*Orphaned volumes*: none ✅")
     except Exception as e:
         lines.append(f"⚠️ Volumes: {e}")
+
+    try:
+        backups = volume_backups(config)
+        if backups:
+            total_gb = sum(b["size_gb"] for b in backups)
+            lines.append(f"\n*Volume backups ({len(backups)}, {total_gb:.0f} GB) ⚠️*")
+            for b in backups:
+                lines.append(f"  • {b['name']} {b['size_gb']} GB [{b['kind']}/{b['type']}] {b['created']}")
+        else:
+            lines.append("\n*Volume backups*: none ✅")
+    except Exception as e:
+        lines.append(f"⚠️ Backups: {e}")
+
+    try:
+        imgs = custom_images(config)
+        if imgs:
+            unused = [i for i in imgs if not i["in_use"]]
+            label = f"{len(imgs)} total, {len(unused)} unused" if unused else f"{len(imgs)} total, all in use"
+            warn = "  ⚠️" if unused else ""
+            lines.append(f"\n*Custom images ({label}){warn}*")
+            for img in imgs:
+                tag = "  ⚠️ unused" if not img["in_use"] else ""
+                lines.append(f"  • {img['name']} {img['size_gb']} GB{tag}")
+        else:
+            lines.append("\n*Custom images*: none")
+    except Exception as e:
+        lines.append(f"⚠️ Images: {e}")
+
+    try:
+        usage_gb = object_storage_usage_gb(config)
+        max_os = sget("max_object_storage_gb")
+        over = usage_gb > max_os
+        lines.append(f"\n*Object Storage*: {usage_gb:.1f} GB / {max_os:.0f} GB limit{'  ⚠️' if over else ' ✅'}")
+    except Exception as e:
+        lines.append(f"⚠️ Object Storage: {e}")
 
     return "\n".join(lines)
 
@@ -479,6 +632,31 @@ def check(key_file_path: str) -> None:
             alerts.append(f"💾 Orphaned volumes: {orphan_gb} GB unattached")
     except Exception as e:
         alerts.append(f"⚠️ Volume check failed: {e}")
+
+    try:
+        backups = volume_backups(config)
+        if backups:
+            backup_gb = sum(b["size_gb"] for b in backups)
+            alerts.append(f"🗂️ Volume backups: {len(backups)} ({backup_gb:.0f} GB)")
+    except Exception as e:
+        alerts.append(f"⚠️ Backup check failed: {e}")
+
+    try:
+        imgs = custom_images(config)
+        unused_imgs = [i for i in imgs if not i["in_use"]]
+        if unused_imgs:
+            unused_gb = sum(i["size_gb"] for i in unused_imgs)
+            alerts.append(f"🖼️ Unused custom images: {len(unused_imgs)} ({unused_gb:.0f} GB)")
+    except Exception as e:
+        alerts.append(f"⚠️ Image check failed: {e}")
+
+    try:
+        max_os = sget("max_object_storage_gb")
+        usage_gb = object_storage_usage_gb(config)
+        if usage_gb > max_os:
+            alerts.append(f"🗄️ Object Storage: {usage_gb:.1f} GB (threshold {max_os:.0f} GB)")
+    except Exception as e:
+        alerts.append(f"⚠️ Object Storage check failed: {e}")
 
     cleanup_note = ""
     if auto and (ips or boot_vols or block_vols):

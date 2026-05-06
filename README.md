@@ -48,6 +48,7 @@ docker run -d \
 | `MAX_FREE_PUBLIC_IPS` | | `2` | Unassigned reserved IPs before alerting (OCI free tier: 2) |
 | `CHECK_INTERVAL_HOURS` | | `6` | How often to run checks |
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |
+| `OCI_ACCOUNT_LABEL` | | compartment name | Display name shown in alerts and status messages (e.g. `oci@example.com-123456`) |
 
 All thresholds can also be changed at runtime via Telegram commands and are persisted to the state bucket.
 

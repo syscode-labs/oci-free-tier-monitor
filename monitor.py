@@ -19,6 +19,7 @@ BOT_TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID           = os.environ["TELEGRAM_CHAT_ID"]
 INTERVAL_HOURS    = float(os.environ.get("CHECK_INTERVAL_HOURS", "6"))
 OCI_STATE_BUCKET  = os.environ.get("OCI_STATE_BUCKET", "")
+OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
 
 STATE_FILE         = "/data/state.json"
 BUCKET_STATE_KEY   = "oci-monitor/state.json"
@@ -27,8 +28,8 @@ BUCKET_REPORTS_KEY = "oci-monitor/reports/{ts}.json"
 _lock = threading.Lock()
 _state: dict = {}
 
-_tenancy_slug        = ""
-_tenancy_display     = ""
+_tenancy_slug        = ""   # used in console URLs
+_account_label       = ""   # display name in messages (compartment name or OCI_ACCOUNT_LABEL)
 _availability_domain = ""
 _os_namespace        = ""   # OCI Object Storage tenancy namespace
 
@@ -146,7 +147,9 @@ def build_oci_config(key_file_path: str) -> dict:
 def fetch_tenancy_info(config: dict) -> tuple[str, str]:
     client = oci.identity.IdentityClient(config)
     t = client.get_tenancy(TENANCY_OCID).data
-    return t.name, t.description or t.name
+    compartment = client.get_compartment(COMPARTMENT_OCID).data
+    label = OCI_ACCOUNT_LABEL or compartment.name or t.description or t.name
+    return t.name, label
 
 
 def fetch_availability_domain(config: dict) -> str:
@@ -327,7 +330,7 @@ def build_status_message(key_file_path: str) -> str:
     max_free_ips = sget("max_free_public_ips")
     auto = sget("auto_cleanup")
 
-    header = f"📊 *{_tenancy_display}*" if _tenancy_display else "📊 *OCI*"
+    header = f"📊 *{_account_label}*" if _account_label else "📊 *OCI*"
     if _tenancy_slug:
         header += f"\n`{_tenancy_slug}` · [Billing]({billing_url()})"
     lines = [header]
@@ -374,7 +377,7 @@ def build_status_message(key_file_path: str) -> str:
 
 def build_scan_message(key_file_path: str) -> str:
     config = build_oci_config(key_file_path)
-    lines = [f"🔍 *Resource scan — {_tenancy_display or 'OCI'}*"]
+    lines = [f"🔍 *Resource scan — {_account_label or 'OCI'}*"]
 
     try:
         instances = compute_instances(config)
@@ -484,12 +487,12 @@ def check(key_file_path: str) -> None:
             cleanup_note = f"\n⚠️ Auto-cleanup failed: {e}"
 
     if alerts:
-        name = _tenancy_display or "syscode-homelab"
+        name = _account_label or "OCI"
         body = f"🚨 *{name} alert*\n" + "\n".join(alerts) + cleanup_note
         body += f"\n[View billing]({billing_url()})"
         send_telegram(CHAT_ID, body)
     elif cleanup_note:
-        name = _tenancy_display or "syscode-homelab"
+        name = _account_label or "OCI"
         send_telegram(CHAT_ID, f"🤖 *{name} cleanup*{cleanup_note}")
 
 
@@ -593,7 +596,7 @@ def poll_commands(key_file_path: str) -> None:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    global _tenancy_slug, _tenancy_display, _availability_domain, _os_namespace
+    global _tenancy_slug, _account_label, _availability_domain, _os_namespace
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
         f.write(API_KEY_PEM)
@@ -603,7 +606,7 @@ def main() -> None:
         config = build_oci_config(key_file_path)
 
         try:
-            _tenancy_slug, _tenancy_display = fetch_tenancy_info(config)
+            _tenancy_slug, _account_label = fetch_tenancy_info(config)
         except Exception:
             pass
         try:

@@ -461,11 +461,15 @@ def build_status_message(key_file_path: str) -> str:
         count = len(lbs)
         over = count > max_lb
         empty = [lb for lb in lbs if lb["backends"] == 0 and lb["listeners"] == 0]
-        breached = breached or over or bool(empty)
+        paid_bw = [lb for lb in lbs if lb["max_mbps"] and lb["max_mbps"] > 10]
+        warn = over or bool(empty) or bool(paid_bw)
+        breached = breached or warn
         label = f"{count} / {max_lb}"
         if empty:
             label += f"  ({len(empty)} empty — billing with no traffic)"
-        lines.append(f"{'🚨' if (over or empty) else '⚖️'} Load balancers: {label}{'  ⚠️' if (over or empty) else ''}")
+        if paid_bw:
+            label += f"  ({len(paid_bw)} above 10 Mbps free tier)"
+        lines.append(f"{'🚨' if warn else '⚖️'} Load balancers: {label}{'  ⚠️' if warn else ''}")
     except Exception as e:
         lines.append(f"⚠️ LBs: error — {e}")
 
@@ -538,8 +542,13 @@ def build_scan_message(key_file_path: str) -> str:
             lines.append(f"\n*Load balancers ({len(lbs)})*")
             for lb in lbs:
                 bw = f"{lb['min_mbps']}/{lb['max_mbps']} Mbps" if lb["min_mbps"] else lb["shape"]
-                empty_tag = "  ⚠️ empty (no backends/listeners)" if lb["backends"] == 0 and lb["listeners"] == 0 else ""
-                lines.append(f"  • {lb['name']} `{bw}` {lb['backends']}be/{lb['listeners']}li{empty_tag}")
+                tags = []
+                if lb["backends"] == 0 and lb["listeners"] == 0:
+                    tags.append("⚠️ empty")
+                if lb["max_mbps"] and lb["max_mbps"] > 10:
+                    tags.append(f"⚠️ above free tier ({lb['max_mbps']} Mbps)")
+                tag_str = "  " + "  ".join(tags) if tags else ""
+                lines.append(f"  • {lb['name']} `{bw}` {lb['backends']}be/{lb['listeners']}li{tag_str}")
         else:
             lines.append("\n*Load balancers*: none ✅")
     except Exception as e:
@@ -644,10 +653,13 @@ def check(key_file_path: str) -> None:
         lbs = load_balancers(config)
         count = len(lbs)
         empty = [lb for lb in lbs if lb["backends"] == 0 and lb["listeners"] == 0]
+        paid_bw = [lb for lb in lbs if lb["max_mbps"] and lb["max_mbps"] > 10]
         if count > max_lb:
             alerts.append(f"⚖️ Load balancers: {count} active (max {max_lb})")
         if empty:
             alerts.append(f"⚖️ Empty LBs billing with no traffic: {', '.join(lb['name'] for lb in empty)}")
+        if paid_bw:
+            alerts.append(f"⚖️ LBs above 10 Mbps free tier: {', '.join(f'{lb[\"name\"]} ({lb[\"max_mbps\"]} Mbps)' for lb in paid_bw)}")
     except Exception as e:
         alerts.append(f"⚠️ LB check failed: {e}")
 

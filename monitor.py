@@ -182,12 +182,31 @@ def monthly_spend(config: dict) -> tuple[float, str]:
     return total, currency
 
 
-def lb_count(config: dict) -> int:
+def load_balancers(config: dict) -> list[dict]:
     client = oci.load_balancer.LoadBalancerClient(config)
     lbs = oci.pagination.list_call_get_all_results(
         client.list_load_balancers, compartment_id=COMPARTMENT_OCID,
     ).data
-    return sum(1 for lb in lbs if lb.lifecycle_state not in ("DELETED", "TERMINATING"))
+    result = []
+    for lb in lbs:
+        if lb.lifecycle_state in ("DELETED", "TERMINATING"):
+            continue
+        sd = (lb.shape_details or {})
+        min_mbps = getattr(sd, "minimum_bandwidth_in_mbps", None) if hasattr(sd, "minimum_bandwidth_in_mbps") else (sd.get("minimum_bandwidth_in_mbps") if isinstance(sd, dict) else None)
+        max_mbps = getattr(sd, "maximum_bandwidth_in_mbps", None) if hasattr(sd, "maximum_bandwidth_in_mbps") else (sd.get("maximum_bandwidth_in_mbps") if isinstance(sd, dict) else None)
+        backends = sum(len(bs.backends or []) for bs in (lb.backend_sets or {}).values())
+        listeners = len(lb.listeners or {})
+        result.append({
+            "id": lb.id,
+            "name": lb.display_name,
+            "shape": lb.shape_name,
+            "min_mbps": min_mbps,
+            "max_mbps": max_mbps,
+            "backends": backends,
+            "listeners": listeners,
+            "state": lb.lifecycle_state,
+        })
+    return result
 
 
 def orphaned_public_ips(config: dict) -> list[dict]:
@@ -438,10 +457,15 @@ def build_status_message(key_file_path: str) -> str:
         lines.append(f"⚠️ Spend: error — {e}")
 
     try:
-        count = lb_count(config)
+        lbs = load_balancers(config)
+        count = len(lbs)
         over = count > max_lb
-        breached = breached or over
-        lines.append(f"{'🚨' if over else '⚖️'} Load balancers: {count} / {max_lb}{'  ⚠️' if over else ''}")
+        empty = [lb for lb in lbs if lb["backends"] == 0 and lb["listeners"] == 0]
+        breached = breached or over or bool(empty)
+        label = f"{count} / {max_lb}"
+        if empty:
+            label += f"  ({len(empty)} empty — billing with no traffic)"
+        lines.append(f"{'🚨' if (over or empty) else '⚖️'} Load balancers: {label}{'  ⚠️' if (over or empty) else ''}")
     except Exception as e:
         lines.append(f"⚠️ LBs: error — {e}")
 
@@ -509,8 +533,15 @@ def build_scan_message(key_file_path: str) -> str:
         lines.append(f"⚠️ Compute: {e}")
 
     try:
-        count = lb_count(config)
-        lines.append(f"\n*Load balancers*: {count}")
+        lbs = load_balancers(config)
+        if lbs:
+            lines.append(f"\n*Load balancers ({len(lbs)})*")
+            for lb in lbs:
+                bw = f"{lb['min_mbps']}/{lb['max_mbps']} Mbps" if lb["min_mbps"] else lb["shape"]
+                empty_tag = "  ⚠️ empty (no backends/listeners)" if lb["backends"] == 0 and lb["listeners"] == 0 else ""
+                lines.append(f"  • {lb['name']} `{bw}` {lb['backends']}be/{lb['listeners']}li{empty_tag}")
+        else:
+            lines.append("\n*Load balancers*: none ✅")
     except Exception as e:
         lines.append(f"⚠️ LBs: {e}")
 
@@ -610,9 +641,13 @@ def check(key_file_path: str) -> None:
         alerts.append(f"⚠️ Cost check failed: {e}")
 
     try:
-        count = lb_count(config)
+        lbs = load_balancers(config)
+        count = len(lbs)
+        empty = [lb for lb in lbs if lb["backends"] == 0 and lb["listeners"] == 0]
         if count > max_lb:
             alerts.append(f"⚖️ Load balancers: {count} active (max {max_lb})")
+        if empty:
+            alerts.append(f"⚖️ Empty LBs billing with no traffic: {', '.join(lb['name'] for lb in empty)}")
     except Exception as e:
         alerts.append(f"⚠️ LB check failed: {e}")
 

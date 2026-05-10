@@ -659,7 +659,7 @@ def check(key_file_path: str) -> None:
         if empty:
             alerts.append(f"⚖️ Empty LBs billing with no traffic: {', '.join(lb['name'] for lb in empty)}")
         if paid_bw:
-            alerts.append(f"⚖️ LBs above 10 Mbps free tier: {', '.join(f'{lb[\"name\"]} ({lb[\"max_mbps\"]} Mbps)' for lb in paid_bw)}")
+            alerts.append("⚖️ LBs above 10 Mbps free tier: " + ", ".join(f'{lb["name"]} ({lb["max_mbps"]} Mbps)' for lb in paid_bw))
     except Exception as e:
         alerts.append(f"⚠️ LB check failed: {e}")
 

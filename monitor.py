@@ -38,6 +38,8 @@ DEFAULTS = {
     "max_lb_count":         int(os.environ.get("MAX_LB_COUNT", "1")),
     "max_free_public_ips":  int(os.environ.get("MAX_FREE_PUBLIC_IPS", "2")),
     "max_object_storage_gb": float(os.environ.get("MAX_OBJECT_STORAGE_GB", "18.0")),
+    "alert_on_change":      os.environ.get("ALERT_ON_CHANGE", "true").lower() not in ("0", "false", "no"),
+    "last_change_alert_signature": None,
     "silenced_month":       None,
     "auto_cleanup":         True,
 }
@@ -631,6 +633,10 @@ def _cleanup_summary(report: dict) -> str:
 
 # ── scheduled check ───────────────────────────────────────────────────────────
 
+def _alert_signature(alerts: list[str]) -> str:
+    return json.dumps(alerts, sort_keys=True, separators=(",", ":"))
+
+
 def check(key_file_path: str) -> None:
     if is_silenced():
         return
@@ -640,14 +646,17 @@ def check(key_file_path: str) -> None:
     max_lb = sget("max_lb_count")
     max_free_ips = sget("max_free_public_ips")
     auto = sget("auto_cleanup")
+    alert_on_change = sget("alert_on_change")
     alerts = []
+    threshold_alerts = []
+    change_alerts = []
 
     try:
         spend, currency = monthly_spend(config)
         if spend > threshold:
-            alerts.append(f"💸 Spend: {currency} {spend:.2f} / {threshold:.2f} threshold")
+            threshold_alerts.append(f"💸 Spend: {currency} {spend:.2f} / {threshold:.2f} threshold")
     except Exception as e:
-        alerts.append(f"⚠️ Cost check failed: {e}")
+        threshold_alerts.append(f"⚠️ Cost check failed: {e}")
 
     try:
         lbs = load_balancers(config)
@@ -655,55 +664,62 @@ def check(key_file_path: str) -> None:
         empty = [lb for lb in lbs if lb["backends"] == 0 and lb["listeners"] == 0]
         paid_bw = [lb for lb in lbs if lb["max_mbps"] and lb["max_mbps"] > 10]
         if count > max_lb:
-            alerts.append(f"⚖️ Load balancers: {count} active (max {max_lb})")
+            threshold_alerts.append(f"⚖️ Load balancers: {count} active (max {max_lb})")
         if empty:
-            alerts.append(f"⚖️ Empty LBs billing with no traffic: {', '.join(lb['name'] for lb in empty)}")
+            change_alerts.append(f"⚖️ Empty LBs billing with no traffic: {', '.join(lb['name'] for lb in empty)}")
         if paid_bw:
-            alerts.append("⚖️ LBs above 10 Mbps free tier: " + ", ".join(f'{lb["name"]} ({lb["max_mbps"]} Mbps)' for lb in paid_bw))
+            threshold_alerts.append("⚖️ LBs above 10 Mbps free tier: " + ", ".join(f'{lb["name"]} ({lb["max_mbps"]} Mbps)' for lb in paid_bw))
     except Exception as e:
-        alerts.append(f"⚠️ LB check failed: {e}")
+        threshold_alerts.append(f"⚠️ LB check failed: {e}")
 
     ips, boot_vols, block_vols = [], [], []
     try:
         ips = orphaned_public_ips(config)
         if len(ips) > max_free_ips:
-            alerts.append(f"🌐 Unassigned reserved IPs: {len(ips)}")
+            threshold_alerts.append(f"🌐 Unassigned reserved IPs: {len(ips)}")
     except Exception as e:
-        alerts.append(f"⚠️ Public IP check failed: {e}")
+        threshold_alerts.append(f"⚠️ Public IP check failed: {e}")
 
     try:
         boot_vols = orphaned_boot_volumes(config)
         block_vols = orphaned_block_volumes(config)
         orphan_gb = sum(v["size_gb"] for v in boot_vols + block_vols)
         if orphan_gb > 0:
-            alerts.append(f"💾 Orphaned volumes: {orphan_gb} GB unattached")
+            change_alerts.append(f"💾 Orphaned volumes: {orphan_gb} GB unattached")
     except Exception as e:
-        alerts.append(f"⚠️ Volume check failed: {e}")
+        threshold_alerts.append(f"⚠️ Volume check failed: {e}")
 
     try:
         backups = volume_backups(config)
         if backups:
             backup_gb = sum(b["size_gb"] for b in backups)
-            alerts.append(f"🗂️ Volume backups: {len(backups)} ({backup_gb:.0f} GB)")
+            change_alerts.append(f"🗂️ Volume backups: {len(backups)} ({backup_gb:.0f} GB)")
     except Exception as e:
-        alerts.append(f"⚠️ Backup check failed: {e}")
+        threshold_alerts.append(f"⚠️ Backup check failed: {e}")
 
     try:
         imgs = custom_images(config)
         unused_imgs = [i for i in imgs if not i["in_use"]]
         if unused_imgs:
             unused_gb = sum(i["size_gb"] for i in unused_imgs)
-            alerts.append(f"🖼️ Unused custom images: {len(unused_imgs)} ({unused_gb:.0f} GB)")
+            change_alerts.append(f"🖼️ Unused custom images: {len(unused_imgs)} ({unused_gb:.0f} GB)")
     except Exception as e:
-        alerts.append(f"⚠️ Image check failed: {e}")
+        threshold_alerts.append(f"⚠️ Image check failed: {e}")
 
     try:
         max_os = sget("max_object_storage_gb")
         usage_gb = object_storage_usage_gb(config)
         if usage_gb > max_os:
-            alerts.append(f"🗄️ Object Storage: {usage_gb:.1f} GB (threshold {max_os:.0f} GB)")
+            threshold_alerts.append(f"🗄️ Object Storage: {usage_gb:.1f} GB (threshold {max_os:.0f} GB)")
     except Exception as e:
-        alerts.append(f"⚠️ Object Storage check failed: {e}")
+        threshold_alerts.append(f"⚠️ Object Storage check failed: {e}")
+
+    change_signature = _alert_signature(change_alerts)
+    previous_change_signature = sget("last_change_alert_signature")
+    change_alerts_changed = previous_change_signature != change_signature
+    if change_alerts_changed:
+        sset("last_change_alert_signature", change_signature, config)
+    alerts = threshold_alerts + (change_alerts if (not alert_on_change or change_alerts_changed) else [])
 
     cleanup_note = ""
     if auto and (ips or boot_vols or block_vols):
@@ -719,6 +735,9 @@ def check(key_file_path: str) -> None:
         body = f"🚨 *{name} alert*\n" + "\n".join(alerts) + cleanup_note
         body += f"\n[View billing]({billing_url()})"
         send_telegram(CHAT_ID, body)
+    elif alert_on_change and change_alerts_changed and previous_change_signature:
+        name = _account_label or "OCI"
+        send_telegram(CHAT_ID, f"✅ *{name} alert*\nNon-threshold findings cleared")
     elif cleanup_note:
         name = _account_label or "OCI"
         send_telegram(CHAT_ID, f"🤖 *{name} cleanup*{cleanup_note}")

@@ -1,10 +1,16 @@
 # oci-free-tier-monitor
 
+[![Docker](https://github.com/syscode-labs/oci-free-tier-monitor/actions/workflows/docker.yml/badge.svg)](https://github.com/syscode-labs/oci-free-tier-monitor/actions/workflows/docker.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+![GHCR](https://img.shields.io/badge/container-ghcr.io-blue)
+![OCI](https://img.shields.io/badge/cloud-OCI-red)
+
 Active OCI cost and resource monitor with Telegram alerts and auto-cleanup. Runs as a container, checks on a configurable schedule, and reacts to bot commands.
 
 ## Features
 
 - **Cost alerting** — monthly spend vs a configurable GBP threshold
+- **Change-gated scheduled alerts** — enabled by default; repeated non-threshold findings only alert when they change
 - **Load balancer count** — alerts when active LBs exceed the free tier limit
 - **Orphaned reserved public IPs** — detects and auto-deletes unassigned IPs burning budget
 - **Orphaned volumes** — detects and auto-deletes unattached boot/block volumes
@@ -50,11 +56,14 @@ docker run -d \
 | `MAX_LB_COUNT` | | `1` | Max allowed active load balancers |
 | `MAX_FREE_PUBLIC_IPS` | | `2` | Unassigned reserved IPs before alerting (OCI free tier: 2) |
 | `MAX_OBJECT_STORAGE_GB` | | `18.0` | Object Storage alert threshold in GB (free tier limit: 20 GB) |
+| `ALERT_ON_CHANGE` | | `true` | When enabled, scheduled non-threshold findings alert only when the finding set changes |
 | `CHECK_INTERVAL_HOURS` | | `6` | How often to run checks |
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |
 | `OCI_ACCOUNT_LABEL` | | compartment name | Display name shown in alerts and status messages (e.g. `oci@example.com-123456`) |
 
 All thresholds can also be changed at runtime via Telegram commands and are persisted to the state bucket.
+
+Scheduled checks always send threshold breaches and check failures. Non-threshold findings such as empty load balancers, orphaned volumes, backups, and unused custom images are sent when they first appear, change, or clear, which avoids repeating the same finding every interval.
 
 ## OCI IAM policy
 

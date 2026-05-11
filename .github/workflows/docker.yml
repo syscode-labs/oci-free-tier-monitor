@@ -3,9 +3,39 @@ name: Docker
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Check conventional commit message
+        run: |
+          MSG=$(git log -1 --pretty=%s)
+          echo "Checking: $MSG"
+          echo "$MSG" > /tmp/commit-msg
+          pre-commit run conventional-pre-commit \
+            --hook-stage commit-msg \
+            --commit-msg-filename /tmp/commit-msg
+
+      - name: Run pre-commit on all files
+        run: pre-commit run --all-files
+
   build:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       matrix:
         include:
@@ -81,7 +111,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=,format=short
+            type=raw,value={{date 'YYYY.MM.DD'}},enable={{is_default_branch}}
 
       - name: Create and push manifest
         run: |

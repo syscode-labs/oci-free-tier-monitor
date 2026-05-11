@@ -21,3 +21,7 @@ run = "python -m pytest tests/"
 [tasks.build]
 description = "Build Docker image locally"
 run = "docker build -t oci-free-tier-monitor ."
+
+[tasks."iam:setup"]
+description = "Create OCI user, group, and policies (idempotent)"
+run = "bash scripts/setup-iam.sh"

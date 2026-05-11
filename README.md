@@ -67,26 +67,20 @@ Scheduled checks always send threshold breaches and check failures. Non-threshol
 
 ## OCI IAM policy
 
-Create a dedicated user and group, attach an API key, and apply this policy in the tenancy root:
+Run the setup script to create the dedicated user, group, and policies automatically:
 
-```
-Allow group oci-monitor to read usage-report in tenancy
-Allow group oci-monitor to read tenancies in tenancy
-Allow group oci-monitor to read objectstorage-namespaces in tenancy
-Allow group oci-monitor to read all-resources in compartment <your-compartment>
-Allow group oci-monitor to manage public-ips in compartment <your-compartment>
-Allow group oci-monitor to manage volumes in compartment <your-compartment>
-Allow group oci-monitor to manage boot-volumes in compartment <your-compartment>
-Allow group oci-monitor to inspect volume-backups in compartment <your-compartment>
-Allow group oci-monitor to inspect boot-volume-backups in compartment <your-compartment>
-Allow group oci-monitor to inspect images in compartment <your-compartment>
-Allow group oci-monitor to read buckets in compartment <your-compartment>
-Allow group oci-monitor to read objects in compartment <your-compartment>
-Allow group oci-monitor to manage objects in compartment <your-compartment>
-  where target.bucket.name = '<your-state-bucket>'
+```bash
+export OCI_TENANCY_OCID=ocid1.tenancy.oc1..
+export OCI_COMPARTMENT_OCID=ocid1.compartment.oc1..
+export OCI_STATE_BUCKET=your-state-bucket   # optional — scopes the object manage policy
+
+mise run iam:setup
+# or: make iam-setup
 ```
 
-> The `usage-report` permission must be granted at the tenancy level as cost data is tenancy-scoped.
+The script is idempotent — safe to re-run if policies need updating. At the end it prints a direct link to attach an API key to the created user in the Console.
+
+> Requires the [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm) configured with credentials that have IAM write access at the tenancy root.
 
 ## Telegram setup
 
@@ -152,6 +146,7 @@ mise run hooks:install  # install pre-commit hooks (lint + conventional commits)
 | `mise run lint` | `make lint` | Run all pre-commit checks |
 | `mise run test` | `make test` | Run test suite |
 | `mise run build` | `make build` | Build Docker image locally |
+| `mise run iam:setup` | `make iam-setup` | Create OCI user, group, and policies |
 
 ### Adding or updating dependencies
 

@@ -1,4 +1,4 @@
-.PHONY: compile hooks-install lint test build
+.PHONY: compile hooks-install lint test build iam-setup
 
 compile:
 	pip-compile requirements.in -o requirements.txt --generate-hashes --strip-extras
@@ -14,3 +14,6 @@ test:
 
 build:
 	docker build -t oci-free-tier-monitor .
+
+iam-setup:
+	bash scripts/setup-iam.sh

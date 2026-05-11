@@ -1,10 +1,16 @@
 # oci-free-tier-monitor
 
+[![Docker](https://github.com/syscode-labs/oci-free-tier-monitor/actions/workflows/docker.yml/badge.svg)](https://github.com/syscode-labs/oci-free-tier-monitor/actions/workflows/docker.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+![GHCR](https://img.shields.io/badge/container-ghcr.io-blue)
+![OCI](https://img.shields.io/badge/cloud-OCI-red)
+
 Active OCI cost and resource monitor with Telegram alerts and auto-cleanup. Runs as a container, checks on a configurable schedule, and reacts to bot commands.
 
 ## Features
 
 - **Cost alerting** — monthly spend vs a configurable GBP threshold
+- **Change-gated scheduled alerts** — enabled by default; repeated non-threshold findings only alert when they change
 - **Load balancer count** — alerts when active LBs exceed the free tier limit
 - **Orphaned reserved public IPs** — detects and auto-deletes unassigned IPs burning budget
 - **Orphaned volumes** — detects and auto-deletes unattached boot/block volumes
@@ -50,11 +56,14 @@ docker run -d \
 | `MAX_LB_COUNT` | | `1` | Max allowed active load balancers |
 | `MAX_FREE_PUBLIC_IPS` | | `2` | Unassigned reserved IPs before alerting (OCI free tier: 2) |
 | `MAX_OBJECT_STORAGE_GB` | | `18.0` | Object Storage alert threshold in GB (free tier limit: 20 GB) |
+| `ALERT_ON_CHANGE` | | `true` | When enabled, scheduled non-threshold findings alert only when the finding set changes |
 | `CHECK_INTERVAL_HOURS` | | `6` | How often to run checks |
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |
 | `OCI_ACCOUNT_LABEL` | | compartment name | Display name shown in alerts and status messages (e.g. `oci@example.com-123456`) |
 
 All thresholds can also be changed at runtime via Telegram commands and are persisted to the state bucket.
+
+Scheduled checks always send threshold breaches and check failures. Non-threshold findings such as empty load balancers, orphaned volumes, backups, and unused custom images are sent when they first appear, change, or clear, which avoids repeating the same finding every interval.
 
 ## OCI IAM policy
 
@@ -120,3 +129,68 @@ When enabled (default), each check cycle:
 5. A JSON report is written to the state bucket
 
 Disable with `/autocleanup off` or by setting `auto_cleanup: false` in `state.json` before starting.
+
+## Development
+
+### Prerequisites
+
+- [mise](https://mise.jdx.dev/) — manages `pip-tools` and `pre-commit` via pipx
+- Docker (for local builds)
+
+### Setup
+
+```bash
+mise install          # install pip-tools and pre-commit via pipx
+mise run hooks:install  # install pre-commit hooks (lint + conventional commits)
+```
+
+### Tasks
+
+| Command | Makefile equivalent | Description |
+|---|---|---|
+| `mise run compile` | `make compile` | Repin `requirements.txt` from `requirements.in` |
+| `mise run lint` | `make lint` | Run all pre-commit checks |
+| `mise run test` | `make test` | Run test suite |
+| `mise run build` | `make build` | Build Docker image locally |
+
+### Adding or updating dependencies
+
+Edit `requirements.in`, then run:
+
+```bash
+mise run compile
+```
+
+Commit both `requirements.in` and the updated `requirements.txt`.
+
+### Dev workflow
+
+```mermaid
+flowchart TD
+    A([clone / pull]) --> B[mise install]
+    B --> C[mise run hooks:install]
+    C --> D{write code}
+    D --> E[mise run compile\nif deps changed]
+    E --> F[mise run lint]
+    F --> G[git commit\npre-commit runs automatically]
+    G -->|bad message or lint fail| D
+    G -->|ok| H[git push]
+    H --> I{CI: lint job}
+    I -->|fail| J([fix & push again])
+    I -->|pass| K{CI: build job\namd64 + arm64}
+    K --> L([GHCR\nYYYY.MM.DD + latest])
+```
+
+### Conventional commits
+
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/). The pre-commit hook enforces this locally; CI enforces it on every push.
+
+Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
+
+Examples:
+
+```
+feat: add object storage usage scan
+fix: resolve f-string backslash syntax error
+chore: repin requirements
+```

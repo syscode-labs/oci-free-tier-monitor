@@ -1,0 +1,23 @@
+[tools]
+"pipx:pip-tools" = "latest"
+"pipx:pre-commit" = "latest"
+
+[tasks.compile]
+description = "Repin requirements.txt from requirements.in"
+run = "pip-compile requirements.in -o requirements.txt --generate-hashes --strip-extras"
+
+[tasks."hooks:install"]
+description = "Install pre-commit hooks"
+run = "pre-commit install && pre-commit install --hook-type commit-msg"
+
+[tasks.lint]
+description = "Run pre-commit checks on all files"
+run = "pre-commit run --all-files"
+
+[tasks.test]
+description = "Run test suite"
+run = "python -m pytest tests/"
+
+[tasks.build]
+description = "Build Docker image locally"
+run = "docker build -t oci-free-tier-monitor ."

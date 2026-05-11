@@ -9,37 +9,40 @@ import threading
 import requests
 import oci
 
-TENANCY_OCID      = os.environ["OCI_TENANCY_OCID"]
-USER_OCID         = os.environ["OCI_USER_OCID"]
-FINGERPRINT       = os.environ["OCI_FINGERPRINT"]
-REGION            = os.environ.get("OCI_REGION", "uk-london-1")
-API_KEY_PEM       = os.environ["OCI_API_KEY"]
-COMPARTMENT_OCID  = os.environ["OCI_COMPARTMENT_OCID"]
-BOT_TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID           = os.environ["TELEGRAM_CHAT_ID"]
-INTERVAL_HOURS    = float(os.environ.get("CHECK_INTERVAL_HOURS", "6"))
-OCI_STATE_BUCKET  = os.environ.get("OCI_STATE_BUCKET", "")
+TENANCY_OCID = os.environ["OCI_TENANCY_OCID"]
+USER_OCID = os.environ["OCI_USER_OCID"]
+FINGERPRINT = os.environ["OCI_FINGERPRINT"]
+REGION = os.environ.get("OCI_REGION", "uk-london-1")
+API_KEY_PEM = os.environ["OCI_API_KEY"]
+COMPARTMENT_OCID = os.environ["OCI_COMPARTMENT_OCID"]
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+INTERVAL_HOURS = float(os.environ.get("CHECK_INTERVAL_HOURS", "6"))
+OCI_STATE_BUCKET = os.environ.get("OCI_STATE_BUCKET", "")
 OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
 
-STATE_FILE         = "/data/state.json"
-BUCKET_STATE_KEY   = "oci-monitor/state.json"
+STATE_FILE = "/data/state.json"
+BUCKET_STATE_KEY = "oci-monitor/state.json"
 BUCKET_REPORTS_KEY = "oci-monitor/reports/{ts}.json"
 
 _lock = threading.Lock()
 _state: dict = {}
 
-_tenancy_slug         = ""    # used in console URLs
-_account_label        = ""    # display name in messages (compartment name or OCI_ACCOUNT_LABEL)
+_tenancy_slug = ""  # used in console URLs
+_account_label = ""  # display name in messages (compartment name or OCI_ACCOUNT_LABEL)
 _availability_domains: list[str] = []
-_os_namespace         = ""    # OCI Object Storage tenancy namespace
+_os_namespace = ""  # OCI Object Storage tenancy namespace
 
 DEFAULTS = {
-    "cost_threshold":       float(os.environ.get("COST_THRESHOLD_GBP", "5.0")),
-    "max_lb_count":         int(os.environ.get("MAX_LB_COUNT", "1")),
-    "max_free_public_ips":  int(os.environ.get("MAX_FREE_PUBLIC_IPS", "2")),
+    "cost_threshold": float(os.environ.get("COST_THRESHOLD_GBP", "5.0")),
+    "max_lb_count": int(os.environ.get("MAX_LB_COUNT", "1")),
+    "max_free_public_ips": int(os.environ.get("MAX_FREE_PUBLIC_IPS", "2")),
     "max_object_storage_gb": float(os.environ.get("MAX_OBJECT_STORAGE_GB", "18.0")),
-    "silenced_month":       None,
-    "auto_cleanup":         True,
+    "alert_on_change": os.environ.get("ALERT_ON_CHANGE", "true").lower()
+    not in ("0", "false", "no"),
+    "last_change_alert_signature": None,
+    "silenced_month": None,
+    "auto_cleanup": True,
 }
 
 HELP_TEXT = """\
@@ -58,6 +61,7 @@ HELP_TEXT = """\
 
 # ── state (local + OCI bucket) ───────────────────────────────────────────────
 
+
 def _state_from_bucket(config: dict) -> dict | None:
     if not OCI_STATE_BUCKET or not _os_namespace:
         return None
@@ -75,7 +79,9 @@ def _save_state_to_bucket(config: dict, state: dict) -> None:
     try:
         client = oci.object_storage.ObjectStorageClient(config)
         body = json.dumps(state).encode()
-        client.put_object(_os_namespace, OCI_STATE_BUCKET, BUCKET_STATE_KEY, io.BytesIO(body))
+        client.put_object(
+            _os_namespace, OCI_STATE_BUCKET, BUCKET_STATE_KEY, io.BytesIO(body)
+        )
     except Exception:
         pass
 
@@ -135,13 +141,14 @@ def is_silenced() -> bool:
 
 # ── OCI helpers ───────────────────────────────────────────────────────────────
 
+
 def build_oci_config(key_file_path: str) -> dict:
     return {
-        "user":        USER_OCID,
-        "key_file":    key_file_path,
+        "user": USER_OCID,
+        "key_file": key_file_path,
         "fingerprint": FINGERPRINT,
-        "tenancy":     TENANCY_OCID,
-        "region":      REGION,
+        "tenancy": TENANCY_OCID,
+        "region": REGION,
     }
 
 
@@ -166,7 +173,9 @@ def fetch_os_namespace(config: dict) -> str:
 
 def monthly_spend(config: dict) -> tuple[float, str]:
     client = oci.usage_api.UsageapiClient(config)
-    today = datetime.datetime.now(datetime.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.datetime.now(datetime.timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     start = today.replace(day=1)
     end = today + datetime.timedelta(days=1)
     details = oci.usage_api.models.RequestSummarizedUsagesDetails(
@@ -185,38 +194,54 @@ def monthly_spend(config: dict) -> tuple[float, str]:
 def load_balancers(config: dict) -> list[dict]:
     client = oci.load_balancer.LoadBalancerClient(config)
     lbs = oci.pagination.list_call_get_all_results(
-        client.list_load_balancers, compartment_id=COMPARTMENT_OCID,
+        client.list_load_balancers,
+        compartment_id=COMPARTMENT_OCID,
     ).data
     result = []
     for lb in lbs:
         if lb.lifecycle_state in ("DELETED", "TERMINATING"):
             continue
-        sd = (lb.shape_details or {})
-        min_mbps = getattr(sd, "minimum_bandwidth_in_mbps", None) if hasattr(sd, "minimum_bandwidth_in_mbps") else (sd.get("minimum_bandwidth_in_mbps") if isinstance(sd, dict) else None)
-        max_mbps = getattr(sd, "maximum_bandwidth_in_mbps", None) if hasattr(sd, "maximum_bandwidth_in_mbps") else (sd.get("maximum_bandwidth_in_mbps") if isinstance(sd, dict) else None)
-        backends = sum(len(bs.backends or []) for bs in (lb.backend_sets or {}).values())
+        sd = lb.shape_details or {}
+        min_mbps = (
+            getattr(sd, "minimum_bandwidth_in_mbps", None)
+            if hasattr(sd, "minimum_bandwidth_in_mbps")
+            else (sd.get("minimum_bandwidth_in_mbps") if isinstance(sd, dict) else None)
+        )
+        max_mbps = (
+            getattr(sd, "maximum_bandwidth_in_mbps", None)
+            if hasattr(sd, "maximum_bandwidth_in_mbps")
+            else (sd.get("maximum_bandwidth_in_mbps") if isinstance(sd, dict) else None)
+        )
+        backends = sum(
+            len(bs.backends or []) for bs in (lb.backend_sets or {}).values()
+        )
         listeners = len(lb.listeners or {})
-        result.append({
-            "id": lb.id,
-            "name": lb.display_name,
-            "shape": lb.shape_name,
-            "min_mbps": min_mbps,
-            "max_mbps": max_mbps,
-            "backends": backends,
-            "listeners": listeners,
-            "state": lb.lifecycle_state,
-        })
+        result.append(
+            {
+                "id": lb.id,
+                "name": lb.display_name,
+                "shape": lb.shape_name,
+                "min_mbps": min_mbps,
+                "max_mbps": max_mbps,
+                "backends": backends,
+                "listeners": listeners,
+                "state": lb.lifecycle_state,
+            }
+        )
     return result
 
 
 def orphaned_public_ips(config: dict) -> list[dict]:
     client = oci.core.VirtualNetworkClient(config)
     ips = oci.pagination.list_call_get_all_results(
-        client.list_public_ips, scope="REGION", compartment_id=COMPARTMENT_OCID,
+        client.list_public_ips,
+        scope="REGION",
+        compartment_id=COMPARTMENT_OCID,
     ).data
     return [
         {"id": ip.id, "ip": ip.ip_address, "name": ip.display_name}
-        for ip in ips if ip.lifecycle_state == "AVAILABLE"
+        for ip in ips
+        if ip.lifecycle_state == "AVAILABLE"
     ]
 
 
@@ -240,10 +265,13 @@ def orphaned_boot_volumes(config: dict) -> list[dict]:
             availability_domain=ad,
             compartment_id=COMPARTMENT_OCID,
         ).data
-        attached_ids = {a.boot_volume_id for a in attachments if a.lifecycle_state == "ATTACHED"}
+        attached_ids = {
+            a.boot_volume_id for a in attachments if a.lifecycle_state == "ATTACHED"
+        }
         result += [
             {"id": v.id, "name": v.display_name, "size_gb": v.size_in_gbs}
-            for v in available if v.id not in attached_ids
+            for v in available
+            if v.id not in attached_ids
         ]
     return result
 
@@ -251,11 +279,13 @@ def orphaned_boot_volumes(config: dict) -> list[dict]:
 def orphaned_block_volumes(config: dict) -> list[dict]:
     client = oci.core.BlockstorageClient(config)
     vols = oci.pagination.list_call_get_all_results(
-        client.list_volumes, compartment_id=COMPARTMENT_OCID,
+        client.list_volumes,
+        compartment_id=COMPARTMENT_OCID,
     ).data
     return [
         {"id": v.id, "name": v.display_name, "size_gb": v.size_in_gbs}
-        for v in vols if v.lifecycle_state == "AVAILABLE"
+        for v in vols
+        if v.lifecycle_state == "AVAILABLE"
     ]
 
 
@@ -305,7 +335,8 @@ def custom_images(config: dict) -> list[dict]:
         compartment_id=COMPARTMENT_OCID,
     ).data
     active_image_ids = {
-        i.image_id for i in active_instances
+        i.image_id
+        for i in active_instances
         if i.lifecycle_state not in ("TERMINATED", "TERMINATING")
     }
     return [
@@ -345,21 +376,24 @@ def object_storage_usage_gb(config: dict) -> float:
                     break
         except Exception:
             pass
-    return total_bytes / 1024 ** 3
+    return total_bytes / 1024**3
 
 
 def compute_instances(config: dict) -> list[dict]:
     client = oci.core.ComputeClient(config)
     instances = oci.pagination.list_call_get_all_results(
-        client.list_instances, compartment_id=COMPARTMENT_OCID,
+        client.list_instances,
+        compartment_id=COMPARTMENT_OCID,
     ).data
     return [
         {"name": i.display_name, "shape": i.shape, "state": i.lifecycle_state}
-        for i in instances if i.lifecycle_state not in ("TERMINATED", "TERMINATING")
+        for i in instances
+        if i.lifecycle_state not in ("TERMINATED", "TERMINATING")
     ]
 
 
 # ── cleanup ───────────────────────────────────────────────────────────────────
+
 
 def _cleanup_ips(config: dict, ips: list[dict]) -> tuple[list, list]:
     client = oci.core.VirtualNetworkClient(config)
@@ -422,11 +456,17 @@ def run_cleanup(config: dict, ips: list, boot_vols: list, block_vols: list) -> d
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
+
 def send_telegram(chat_id: str, message: str) -> None:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(
         url,
-        json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True},
+        json={
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+        },
         timeout=10,
     )
 
@@ -452,7 +492,9 @@ def build_status_message(key_file_path: str) -> str:
         spend, currency = monthly_spend(config)
         over = spend > threshold
         breached = breached or over
-        lines.append(f"{'💸' if over else '💷'} Spend: {currency} {spend:.2f} / {threshold:.2f}{'  ⚠️' if over else ''}")
+        lines.append(
+            f"{'💸' if over else '💷'} Spend: {currency} {spend:.2f} / {threshold:.2f}{'  ⚠️' if over else ''}"
+        )
     except Exception as e:
         lines.append(f"⚠️ Spend: error — {e}")
 
@@ -469,7 +511,9 @@ def build_status_message(key_file_path: str) -> str:
             label += f"  ({len(empty)} empty — billing with no traffic)"
         if paid_bw:
             label += f"  ({len(paid_bw)} above 10 Mbps free tier)"
-        lines.append(f"{'🚨' if warn else '⚖️'} Load balancers: {label}{'  ⚠️' if warn else ''}")
+        lines.append(
+            f"{'🚨' if warn else '⚖️'} Load balancers: {label}{'  ⚠️' if warn else ''}"
+        )
     except Exception as e:
         lines.append(f"⚠️ LBs: error — {e}")
 
@@ -477,15 +521,22 @@ def build_status_message(key_file_path: str) -> str:
         ips = orphaned_public_ips(config)
         over = len(ips) > max_free_ips
         breached = breached or over
-        lines.append(f"{'🚨' if over else '🌐'} Unassigned IPs: {len(ips)}{'  ⚠️' if over else ''}")
+        lines.append(
+            f"{'🚨' if over else '🌐'} Unassigned IPs: {len(ips)}{'  ⚠️' if over else ''}"
+        )
     except Exception as e:
         lines.append(f"⚠️ Public IPs: error — {e}")
 
     try:
-        orphan_gb = sum(v["size_gb"] for v in orphaned_boot_volumes(config) + orphaned_block_volumes(config))
+        orphan_gb = sum(
+            v["size_gb"]
+            for v in orphaned_boot_volumes(config) + orphaned_block_volumes(config)
+        )
         over = orphan_gb > 0
         breached = breached or over
-        lines.append(f"{'🚨' if over else '💾'} Orphaned volumes: {orphan_gb} GB{'  ⚠️' if over else ''}")
+        lines.append(
+            f"{'🚨' if over else '💾'} Orphaned volumes: {orphan_gb} GB{'  ⚠️' if over else ''}"
+        )
     except Exception as e:
         lines.append(f"⚠️ Volumes: error — {e}")
 
@@ -494,7 +545,9 @@ def build_status_message(key_file_path: str) -> str:
         backup_gb = sum(b["size_gb"] for b in backups)
         over = len(backups) > 0
         breached = breached or over
-        lines.append(f"{'🚨' if over else '🗂️'} Backups: {len(backups)} ({backup_gb:.0f} GB){'  ⚠️' if over else ''}")
+        lines.append(
+            f"{'🚨' if over else '🗂️'} Backups: {len(backups)} ({backup_gb:.0f} GB){'  ⚠️' if over else ''}"
+        )
     except Exception as e:
         lines.append(f"⚠️ Backups: error — {e}")
 
@@ -503,7 +556,11 @@ def build_status_message(key_file_path: str) -> str:
         unused = [i for i in imgs if not i["in_use"]]
         over = bool(unused)
         breached = breached or over
-        label = f"{len(imgs)} ({len(unused)} unused  ⚠️)" if unused else (str(len(imgs)) if imgs else "none")
+        label = (
+            f"{len(imgs)} ({len(unused)} unused  ⚠️)"
+            if unused
+            else (str(len(imgs)) if imgs else "none")
+        )
         lines.append(f"{'🚨' if over else '🖼️'} Custom images: {label}")
     except Exception as e:
         lines.append(f"⚠️ Images: error — {e}")
@@ -513,7 +570,9 @@ def build_status_message(key_file_path: str) -> str:
         usage_gb = object_storage_usage_gb(config)
         over = usage_gb > max_os
         breached = breached or over
-        lines.append(f"{'🚨' if over else '🗄️'} Object Storage: {usage_gb:.1f} / {max_os:.0f} GB{'  ⚠️' if over else ''}")
+        lines.append(
+            f"{'🚨' if over else '🗄️'} Object Storage: {usage_gb:.1f} / {max_os:.0f} GB{'  ⚠️' if over else ''}"
+        )
     except Exception as e:
         lines.append(f"⚠️ Object Storage: error — {e}")
 
@@ -541,14 +600,20 @@ def build_scan_message(key_file_path: str) -> str:
         if lbs:
             lines.append(f"\n*Load balancers ({len(lbs)})*")
             for lb in lbs:
-                bw = f"{lb['min_mbps']}/{lb['max_mbps']} Mbps" if lb["min_mbps"] else lb["shape"]
+                bw = (
+                    f"{lb['min_mbps']}/{lb['max_mbps']} Mbps"
+                    if lb["min_mbps"]
+                    else lb["shape"]
+                )
                 tags = []
                 if lb["backends"] == 0 and lb["listeners"] == 0:
                     tags.append("⚠️ empty")
                 if lb["max_mbps"] and lb["max_mbps"] > 10:
                     tags.append(f"⚠️ above free tier ({lb['max_mbps']} Mbps)")
                 tag_str = "  " + "  ".join(tags) if tags else ""
-                lines.append(f"  • {lb['name']} `{bw}` {lb['backends']}be/{lb['listeners']}li{tag_str}")
+                lines.append(
+                    f"  • {lb['name']} `{bw}` {lb['backends']}be/{lb['listeners']}li{tag_str}"
+                )
         else:
             lines.append("\n*Load balancers*: none ✅")
     except Exception as e:
@@ -585,7 +650,9 @@ def build_scan_message(key_file_path: str) -> str:
             total_gb = sum(b["size_gb"] for b in backups)
             lines.append(f"\n*Volume backups ({len(backups)}, {total_gb:.0f} GB) ⚠️*")
             for b in backups:
-                lines.append(f"  • {b['name']} {b['size_gb']} GB [{b['kind']}/{b['type']}] {b['created']}")
+                lines.append(
+                    f"  • {b['name']} {b['size_gb']} GB [{b['kind']}/{b['type']}] {b['created']}"
+                )
         else:
             lines.append("\n*Volume backups*: none ✅")
     except Exception as e:
@@ -595,7 +662,11 @@ def build_scan_message(key_file_path: str) -> str:
         imgs = custom_images(config)
         if imgs:
             unused = [i for i in imgs if not i["in_use"]]
-            label = f"{len(imgs)} total, {len(unused)} unused" if unused else f"{len(imgs)} total, all in use"
+            label = (
+                f"{len(imgs)} total, {len(unused)} unused"
+                if unused
+                else f"{len(imgs)} total, all in use"
+            )
             warn = "  ⚠️" if unused else ""
             lines.append(f"\n*Custom images ({label}){warn}*")
             for img in imgs:
@@ -610,7 +681,9 @@ def build_scan_message(key_file_path: str) -> str:
         usage_gb = object_storage_usage_gb(config)
         max_os = sget("max_object_storage_gb")
         over = usage_gb > max_os
-        lines.append(f"\n*Object Storage*: {usage_gb:.1f} GB / {max_os:.0f} GB limit{'  ⚠️' if over else ' ✅'}")
+        lines.append(
+            f"\n*Object Storage*: {usage_gb:.1f} GB / {max_os:.0f} GB limit{'  ⚠️' if over else ' ✅'}"
+        )
     except Exception as e:
         lines.append(f"⚠️ Object Storage: {e}")
 
@@ -622,7 +695,10 @@ def _cleanup_summary(report: dict) -> str:
     if report["deleted_ips"]:
         parts.append(f"{len(report['deleted_ips'])} IP(s) deleted")
     if report["deleted_boot_volumes"] or report["deleted_block_volumes"]:
-        gb = sum(v["size_gb"] for v in report["deleted_boot_volumes"] + report["deleted_block_volumes"])
+        gb = sum(
+            v["size_gb"]
+            for v in report["deleted_boot_volumes"] + report["deleted_block_volumes"]
+        )
         parts.append(f"{gb} GB volume(s) deleted")
     if report["errors"]:
         parts.append(f"{len(report['errors'])} error(s)")
@@ -630,6 +706,11 @@ def _cleanup_summary(report: dict) -> str:
 
 
 # ── scheduled check ───────────────────────────────────────────────────────────
+
+
+def _alert_signature(alerts: list[str]) -> str:
+    return json.dumps(alerts, sort_keys=True, separators=(",", ":"))
+
 
 def check(key_file_path: str) -> None:
     if is_silenced():
@@ -640,14 +721,19 @@ def check(key_file_path: str) -> None:
     max_lb = sget("max_lb_count")
     max_free_ips = sget("max_free_public_ips")
     auto = sget("auto_cleanup")
+    alert_on_change = sget("alert_on_change")
     alerts = []
+    threshold_alerts = []
+    change_alerts = []
 
     try:
         spend, currency = monthly_spend(config)
         if spend > threshold:
-            alerts.append(f"💸 Spend: {currency} {spend:.2f} / {threshold:.2f} threshold")
+            threshold_alerts.append(
+                f"💸 Spend: {currency} {spend:.2f} / {threshold:.2f} threshold"
+            )
     except Exception as e:
-        alerts.append(f"⚠️ Cost check failed: {e}")
+        threshold_alerts.append(f"⚠️ Cost check failed: {e}")
 
     try:
         lbs = load_balancers(config)
@@ -655,55 +741,75 @@ def check(key_file_path: str) -> None:
         empty = [lb for lb in lbs if lb["backends"] == 0 and lb["listeners"] == 0]
         paid_bw = [lb for lb in lbs if lb["max_mbps"] and lb["max_mbps"] > 10]
         if count > max_lb:
-            alerts.append(f"⚖️ Load balancers: {count} active (max {max_lb})")
+            threshold_alerts.append(f"⚖️ Load balancers: {count} active (max {max_lb})")
         if empty:
-            alerts.append(f"⚖️ Empty LBs billing with no traffic: {', '.join(lb['name'] for lb in empty)}")
+            change_alerts.append(
+                f"⚖️ Empty LBs billing with no traffic: {', '.join(lb['name'] for lb in empty)}"
+            )
         if paid_bw:
-            alerts.append("⚖️ LBs above 10 Mbps free tier: " + ", ".join(f'{lb["name"]} ({lb["max_mbps"]} Mbps)' for lb in paid_bw))
+            threshold_alerts.append(
+                "⚖️ LBs above 10 Mbps free tier: "
+                + ", ".join(f"{lb['name']} ({lb['max_mbps']} Mbps)" for lb in paid_bw)
+            )
     except Exception as e:
-        alerts.append(f"⚠️ LB check failed: {e}")
+        threshold_alerts.append(f"⚠️ LB check failed: {e}")
 
     ips, boot_vols, block_vols = [], [], []
     try:
         ips = orphaned_public_ips(config)
         if len(ips) > max_free_ips:
-            alerts.append(f"🌐 Unassigned reserved IPs: {len(ips)}")
+            threshold_alerts.append(f"🌐 Unassigned reserved IPs: {len(ips)}")
     except Exception as e:
-        alerts.append(f"⚠️ Public IP check failed: {e}")
+        threshold_alerts.append(f"⚠️ Public IP check failed: {e}")
 
     try:
         boot_vols = orphaned_boot_volumes(config)
         block_vols = orphaned_block_volumes(config)
         orphan_gb = sum(v["size_gb"] for v in boot_vols + block_vols)
         if orphan_gb > 0:
-            alerts.append(f"💾 Orphaned volumes: {orphan_gb} GB unattached")
+            change_alerts.append(f"💾 Orphaned volumes: {orphan_gb} GB unattached")
     except Exception as e:
-        alerts.append(f"⚠️ Volume check failed: {e}")
+        threshold_alerts.append(f"⚠️ Volume check failed: {e}")
 
     try:
         backups = volume_backups(config)
         if backups:
             backup_gb = sum(b["size_gb"] for b in backups)
-            alerts.append(f"🗂️ Volume backups: {len(backups)} ({backup_gb:.0f} GB)")
+            change_alerts.append(
+                f"🗂️ Volume backups: {len(backups)} ({backup_gb:.0f} GB)"
+            )
     except Exception as e:
-        alerts.append(f"⚠️ Backup check failed: {e}")
+        threshold_alerts.append(f"⚠️ Backup check failed: {e}")
 
     try:
         imgs = custom_images(config)
         unused_imgs = [i for i in imgs if not i["in_use"]]
         if unused_imgs:
             unused_gb = sum(i["size_gb"] for i in unused_imgs)
-            alerts.append(f"🖼️ Unused custom images: {len(unused_imgs)} ({unused_gb:.0f} GB)")
+            change_alerts.append(
+                f"🖼️ Unused custom images: {len(unused_imgs)} ({unused_gb:.0f} GB)"
+            )
     except Exception as e:
-        alerts.append(f"⚠️ Image check failed: {e}")
+        threshold_alerts.append(f"⚠️ Image check failed: {e}")
 
     try:
         max_os = sget("max_object_storage_gb")
         usage_gb = object_storage_usage_gb(config)
         if usage_gb > max_os:
-            alerts.append(f"🗄️ Object Storage: {usage_gb:.1f} GB (threshold {max_os:.0f} GB)")
+            threshold_alerts.append(
+                f"🗄️ Object Storage: {usage_gb:.1f} GB (threshold {max_os:.0f} GB)"
+            )
     except Exception as e:
-        alerts.append(f"⚠️ Object Storage check failed: {e}")
+        threshold_alerts.append(f"⚠️ Object Storage check failed: {e}")
+
+    change_signature = _alert_signature(change_alerts)
+    previous_change_signature = sget("last_change_alert_signature")
+    change_alerts_changed = previous_change_signature != change_signature
+    if change_alerts_changed:
+        sset("last_change_alert_signature", change_signature, config)
+    alerts = threshold_alerts + (
+        change_alerts if (not alert_on_change or change_alerts_changed) else []
+    )
 
     cleanup_note = ""
     if auto and (ips or boot_vols or block_vols):
@@ -719,12 +825,16 @@ def check(key_file_path: str) -> None:
         body = f"🚨 *{name} alert*\n" + "\n".join(alerts) + cleanup_note
         body += f"\n[View billing]({billing_url()})"
         send_telegram(CHAT_ID, body)
+    elif alert_on_change and change_alerts_changed and previous_change_signature:
+        name = _account_label or "OCI"
+        send_telegram(CHAT_ID, f"✅ *{name} alert*\nNon-threshold findings cleared")
     elif cleanup_note:
         name = _account_label or "OCI"
         send_telegram(CHAT_ID, f"🤖 *{name} cleanup*{cleanup_note}")
 
 
 # ── command handler ───────────────────────────────────────────────────────────
+
 
 def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
     config = build_oci_config(key_file_path)
@@ -752,7 +862,9 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
             reply = "✅ Auto-cleanup enabled. Orphaned IPs and volumes will be deleted automatically."
         elif parts[1] == "off":
             sset("auto_cleanup", False, config)
-            reply = "🔧 Auto-cleanup disabled. Use /scan to inspect and clean up manually."
+            reply = (
+                "🔧 Auto-cleanup disabled. Use /scan to inspect and clean up manually."
+            )
         else:
             reply = "Usage: `/autocleanup on` or `/autocleanup off`"
 
@@ -781,7 +893,9 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
     elif cmd == "/silence":
         month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
         sset("silenced_month", month, config)
-        reply = f"🔕 Scheduled alerts silenced for {month}. Use /unsilence to re-enable."
+        reply = (
+            f"🔕 Scheduled alerts silenced for {month}. Use /unsilence to re-enable."
+        )
 
     elif cmd == "/unsilence":
         sset("silenced_month", None, config)
@@ -797,6 +911,7 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
 
 
 # ── Telegram polling ──────────────────────────────────────────────────────────
+
 
 def poll_commands(key_file_path: str) -> None:
     offset = None
@@ -823,6 +938,7 @@ def poll_commands(key_file_path: str) -> None:
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     global _tenancy_slug, _account_label, _availability_domains, _os_namespace
 
@@ -848,7 +964,9 @@ def main() -> None:
 
         load_state(config)
 
-        threading.Thread(target=poll_commands, args=(key_file_path,), daemon=True).start()
+        threading.Thread(
+            target=poll_commands, args=(key_file_path,), daemon=True
+        ).start()
 
         while True:
             try:

@@ -348,7 +348,7 @@ def custom_images(config: dict) -> list[dict]:
             "in_use": img.id in active_image_ids,
         }
         for img in images
-        if img.lifecycle_state == "AVAILABLE"
+        if img.lifecycle_state == "AVAILABLE" and img.image_type == "CUSTOM"
     ]
 
 

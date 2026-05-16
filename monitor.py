@@ -460,7 +460,7 @@ def run_cleanup(config: dict, ips: list, boot_vols: list, block_vols: list) -> d
 
 def send_telegram(chat_id: str, message: str) -> None:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(
+    resp = requests.post(
         url,
         json={
             "chat_id": chat_id,
@@ -470,6 +470,8 @@ def send_telegram(chat_id: str, message: str) -> None:
         },
         timeout=10,
     )
+    if not resp.json().get("ok"):
+        print(f"[tg] send failed chat={chat_id}: {resp.text[:200]}", flush=True)
 
 
 def billing_url() -> str:
@@ -942,6 +944,7 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
 
 
 def poll_commands(key_file_path: str) -> None:
+    print("[bot] polling started", flush=True)
     offset = None
     while True:
         try:

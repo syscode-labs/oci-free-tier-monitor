@@ -288,9 +288,9 @@ idna==3.14 \
     --hash=sha256:466d810d7a2cc1022bea9b037c39728d51ae7dad40d480fc9b7d7ecf98ba8ee3 \
     --hash=sha256:e677eaf072e290f7b725f9acf0b3a2bd55f9fd6f7c70abe5f0e34823d0accf69
     # via requests
-oci==2.173.1 \
-    --hash=sha256:0b3f3d58eb8176033ff86b6b117f4023f828b299b60bf52eaa523b7d5f438afb \
-    --hash=sha256:bcbd34d8163e23f10f573ca4e828c702eb063b76b900fe03ffc1cf20baf8d93f
+oci==2.174.0 \
+    --hash=sha256:36c377fb59452b607686d73c1ae1604f2c19e3cabd7d12abe43a4404b10a17c5 \
+    --hash=sha256:f960e413a7f0e59ca5523b57349165f992812bd2738abc34bd9fecbce4722733
     # via -r requirements.in
 pycparser==3.0 \
     --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \

@@ -60,16 +60,30 @@ class ScheduledAlertGatingTests(unittest.TestCase):
             message = self.monitor.send_telegram.call_args.args[1]
         self.assertIn("Unused custom images: 1", message)
 
-    def test_threshold_breaches_alert_even_when_unchanged(self):
+    def test_threshold_breach_alerts_only_once_when_amount_unchanged(self):
+        """Threshold alerts must not repeat when the amount (rounded to £1) stays the same."""
         with self.patch_common_checks():
             self.monitor.monthly_spend.return_value = (6.0, "GBP")
 
             self.monitor.check("/tmp/key.pem")
+            # Second check: same spend — must NOT re-alert
+            self.monitor.check("/tmp/key.pem")
+
+            self.assertEqual(self.monitor.send_telegram.call_count, 1)
+            message = self.monitor.send_telegram.call_args.args[1]
+        self.assertIn("Spend: GBP 6.00 / 5.00 threshold", message)
+
+    def test_threshold_breach_re_alerts_when_amount_changes(self):
+        """A new alert fires when spend crosses the next £1 boundary."""
+        with self.patch_common_checks():
+            self.monitor.monthly_spend.return_value = (6.0, "GBP")
+            self.monitor.check("/tmp/key.pem")
+
+            # Spend jumps to next integer — signature changes, must re-alert
+            self.monitor.monthly_spend.return_value = (7.1, "GBP")
             self.monitor.check("/tmp/key.pem")
 
             self.assertEqual(self.monitor.send_telegram.call_count, 2)
-            message = self.monitor.send_telegram.call_args.args[1]
-        self.assertIn("Spend: GBP 6.00 / 5.00 threshold", message)
 
 
 if __name__ == "__main__":

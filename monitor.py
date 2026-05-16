@@ -41,6 +41,7 @@ DEFAULTS = {
     "alert_on_change": os.environ.get("ALERT_ON_CHANGE", "true").lower()
     not in ("0", "false", "no"),
     "last_change_alert_signature": None,
+    "last_threshold_alert_signature": None,
     "silenced_month": None,
     "auto_cleanup": True,
 }
@@ -712,6 +713,13 @@ def _alert_signature(alerts: list[str]) -> str:
     return json.dumps(alerts, sort_keys=True, separators=(",", ":"))
 
 
+def _is_near_end_of_month(days: int = 2) -> bool:
+    today = datetime.date.today()
+    next_month = (today.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+    last_day = next_month - datetime.timedelta(days=1)
+    return (last_day - today).days < days
+
+
 def check(key_file_path: str) -> None:
     if is_silenced():
         return
@@ -725,6 +733,8 @@ def check(key_file_path: str) -> None:
     alerts = []
     threshold_alerts = []
     change_alerts = []
+    spend: float | None = None
+    currency = "GBP"
 
     try:
         spend, currency = monthly_spend(config)
@@ -802,12 +812,30 @@ def check(key_file_path: str) -> None:
     except Exception as e:
         threshold_alerts.append(f"⚠️ Object Storage check failed: {e}")
 
+    # Gate change_alerts on state change (existing behaviour)
     change_signature = _alert_signature(change_alerts)
     previous_change_signature = sget("last_change_alert_signature")
     change_alerts_changed = previous_change_signature != change_signature
     if change_alerts_changed:
         sset("last_change_alert_signature", change_signature, config)
-    alerts = threshold_alerts + (
+
+    # Gate threshold_alerts on state change OR last 2 days of month (EOM recap)
+    # Spend is rounded to the nearest £1 in the signature so penny-level fluctuations
+    # don't re-fire the same alert on every check cycle.
+    _sig_threshold = [
+        a.replace(f"{currency} {spend:.2f}", f"{currency} {int(spend)}")
+        if spend is not None and "Spend:" in a
+        else a
+        for a in threshold_alerts
+    ]
+    threshold_signature = _alert_signature(_sig_threshold)
+    previous_threshold_signature = sget("last_threshold_alert_signature")
+    threshold_alerts_changed = previous_threshold_signature != threshold_signature
+    near_eom = _is_near_end_of_month()
+    if threshold_alerts_changed:
+        sset("last_threshold_alert_signature", threshold_signature, config)
+
+    alerts = (threshold_alerts if (threshold_alerts_changed or near_eom) else []) + (
         change_alerts if (not alert_on_change or change_alerts_changed) else []
     )
 

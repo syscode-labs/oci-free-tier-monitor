@@ -471,7 +471,19 @@ def send_telegram(chat_id: str, message: str) -> None:
         timeout=10,
     )
     if not resp.json().get("ok"):
-        print(f"[tg] send failed chat={chat_id}: {resp.text[:200]}", flush=True)
+        if resp.status_code == 400 and "parse" in resp.text:
+            print(f"[tg] markdown error at: {message[300:380]!r}", flush=True)
+            resp = requests.post(
+                url,
+                json={
+                    "chat_id": chat_id,
+                    "text": message,
+                    "disable_web_page_preview": True,
+                },
+                timeout=10,
+            )
+        if not resp.json().get("ok"):
+            print(f"[tg] send failed chat={chat_id}: {resp.text[:200]}", flush=True)
 
 
 def billing_url() -> str:

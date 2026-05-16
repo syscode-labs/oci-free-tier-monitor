@@ -959,8 +959,14 @@ def poll_commands(key_file_path: str) -> None:
                 text = msg.get("text", "").strip()
                 chat_id = str(msg.get("chat", {}).get("id", ""))
                 if text.startswith("/"):
-                    handle_command(text, chat_id, key_file_path)
-        except Exception:
+                    print(f"[bot] cmd={text!r} chat={chat_id}", flush=True)
+                    try:
+                        handle_command(text, chat_id, key_file_path)
+                        print(f"[bot] handled {text!r}", flush=True)
+                    except Exception as e:
+                        print(f"[bot] error handling {text!r}: {e}", flush=True)
+        except Exception as e:
+            print(f"[bot] poll error: {e}", flush=True)
             time.sleep(5)
 
 

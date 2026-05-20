@@ -7,6 +7,7 @@ import tempfile
 import datetime
 import threading
 import requests
+import pytz
 import oci
 
 TENANCY_OCID = os.environ["OCI_TENANCY_OCID"]
@@ -138,6 +139,11 @@ def sset(key, value, config: dict | None = None) -> None:
 def is_silenced() -> bool:
     month = sget("silenced_month")
     return month == datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+
+
+def _in_quiet_hours() -> bool:
+    tz = pytz.timezone("Europe/London")
+    return datetime.datetime.now(tz).hour < 9
 
 
 # ── OCI helpers ───────────────────────────────────────────────────────────────
@@ -735,7 +741,7 @@ def _is_near_end_of_month(days: int = 2) -> bool:
 
 
 def check(key_file_path: str) -> None:
-    if is_silenced():
+    if is_silenced() or _in_quiet_hours():
         return
 
     config = build_oci_config(key_file_path)
@@ -867,9 +873,6 @@ def check(key_file_path: str) -> None:
         body = f"🚨 *{name} alert*\n" + "\n".join(alerts) + cleanup_note
         body += f"\n[View billing]({billing_url()})"
         send_telegram(CHAT_ID, body)
-    elif alert_on_change and change_alerts_changed and previous_change_signature:
-        name = _account_label or "OCI"
-        send_telegram(CHAT_ID, f"✅ *{name} alert*\nNon-threshold findings cleared")
     elif cleanup_note:
         name = _account_label or "OCI"
         send_telegram(CHAT_ID, f"🤖 *{name} cleanup*{cleanup_note}")

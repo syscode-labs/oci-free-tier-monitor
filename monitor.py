@@ -46,6 +46,7 @@ DEFAULTS = {
     "last_threshold_alert_signature": None,
     "last_spend": None,
     "last_spend_currency": "GBP",
+    "last_eom_invoice_month": None,
     "silenced_month": None,
     "auto_cleanup": True,
 }
@@ -179,6 +180,32 @@ def fetch_availability_domains(config: dict) -> list[str]:
 def fetch_os_namespace(config: dict) -> str:
     client = oci.object_storage.ObjectStorageClient(config)
     return client.get_namespace().data
+
+
+def monthly_spend_breakdown(config: dict) -> tuple[list[tuple[str, float]], str]:
+    client = oci.usage_api.UsageapiClient(config)
+    today = datetime.datetime.now(datetime.timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    start = today.replace(day=1)
+    end = today + datetime.timedelta(days=1)
+    details = oci.usage_api.models.RequestSummarizedUsagesDetails(
+        tenant_id=TENANCY_OCID,
+        time_usage_started=start,
+        time_usage_ended=end,
+        granularity="MONTHLY",
+        query_type="COST",
+        group_by=["service"],
+    )
+    resp = client.request_summarized_usages(details)
+    currency = resp.data.items[0].currency if resp.data.items else "GBP"
+    rows = []
+    for item in resp.data.items:
+        amount = float(item.computed_amount or 0)
+        if amount > 0:
+            rows.append((item.service or "Other", amount * (1 + VAT_RATE)))
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return rows, currency
 
 
 def monthly_spend(config: dict) -> tuple[float, str]:
@@ -758,6 +785,7 @@ def check(key_file_path: str) -> None:
     threshold_alerts = []
     change_alerts = []
     spend: float | None = None
+    spend_inc: float = 0.0
     currency = "GBP"
 
     try:
@@ -886,6 +914,25 @@ def check(key_file_path: str) -> None:
     elif cleanup_note:
         name = _account_label or "OCI"
         send_telegram(CHAT_ID, f"🤖 *{name} cleanup*{cleanup_note}")
+
+    # EOM invoice preview — once per month, last 2 days only
+    if near_eom and spend is not None and spend_inc > 0:
+        current_month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+        if sget("last_eom_invoice_month") != current_month:
+            try:
+                breakdown, _ = monthly_spend_breakdown(config)
+                name = _account_label or "OCI"
+                lines = [f"🧾 *{name} · Month-end invoice preview*"]
+                lines.append(f"💷 Total inc. VAT: {currency} {spend_inc:.2f}")
+                if breakdown:
+                    lines.append("\n*Breakdown by service:*")
+                    for service, amount in breakdown:
+                        lines.append(f"  • {service} — {currency} {amount:.2f}")
+                lines.append(f"\n[View billing]({billing_url()})")
+                send_telegram(CHAT_ID, "\n".join(lines))
+                sset("last_eom_invoice_month", current_month, config)
+            except Exception as e:
+                send_telegram(CHAT_ID, f"⚠️ EOM invoice preview failed: {e}")
 
 
 # ── command handler ───────────────────────────────────────────────────────────

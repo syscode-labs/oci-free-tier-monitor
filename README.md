@@ -18,6 +18,7 @@ Active OCI cost and resource monitor with Telegram alerts and auto-cleanup. Runs
 - **Custom image scan** — detects unused imported images taking up Object Storage
 - **Object Storage usage** — tracks total bucket usage against the 20 GB free tier limit
 - **Auto-cleanup** — enabled by default; deletes orphans automatically each check cycle
+- **Month-end invoice preview** — on the last 2 days of the month, sends a one-off 🧾 message with VAT-inclusive total and per-service cost breakdown
 - **Telegram bot commands** — `/status`, `/scan`, `/autocleanup`, `/threshold`, `/silence`, and more
 - **State persistence** — preferences saved to OCI Object Storage with local fallback
 - **Cleanup reports** — each cleanup run stored as JSON in the configured bucket
@@ -65,6 +66,8 @@ docker run -d \
 All thresholds can also be changed at runtime via Telegram commands and are persisted to the state bucket.
 
 Scheduled checks always send threshold breaches and check failures. Non-threshold findings such as empty load balancers, orphaned volumes, backups, and unused custom images are sent when they first appear, change, or clear, which avoids repeating the same finding every interval.
+
+On the last 2 days of each calendar month, a single invoice preview message is sent (regardless of threshold) showing the VAT-inclusive total and a breakdown by OCI service. It fires at most once per month.
 
 ## OCI IAM policy
 

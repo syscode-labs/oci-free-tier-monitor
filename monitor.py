@@ -21,6 +21,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 INTERVAL_HOURS = float(os.environ.get("CHECK_INTERVAL_HOURS", "6"))
 OCI_STATE_BUCKET = os.environ.get("OCI_STATE_BUCKET", "")
 OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
+VAT_RATE = float(os.environ.get("VAT_RATE", "0.20"))
 
 STATE_FILE = "/data/state.json"
 BUCKET_STATE_KEY = "oci-monitor/state.json"
@@ -43,6 +44,8 @@ DEFAULTS = {
     not in ("0", "false", "no"),
     "last_change_alert_signature": None,
     "last_threshold_alert_signature": None,
+    "last_spend": None,
+    "last_spend_currency": "GBP",
     "silenced_month": None,
     "auto_cleanup": True,
 }
@@ -511,10 +514,11 @@ def build_status_message(key_file_path: str) -> str:
 
     try:
         spend, currency = monthly_spend(config)
-        over = spend > threshold
+        spend_inc = spend * (1 + VAT_RATE)
+        over = spend_inc > threshold
         breached = breached or over
         lines.append(
-            f"{'💸' if over else '💷'} Spend: {currency} {spend:.2f} / {threshold:.2f}{'  ⚠️' if over else ''}"
+            f"{'💸' if over else '💷'} Spend: {currency} {spend_inc:.2f} / {threshold:.2f}{'  ⚠️' if over else ''}"
         )
     except Exception as e:
         lines.append(f"⚠️ Spend: error — {e}")
@@ -758,10 +762,16 @@ def check(key_file_path: str) -> None:
 
     try:
         spend, currency = monthly_spend(config)
-        if spend > threshold:
+        spend_inc = spend * (1 + VAT_RATE)
+        if spend_inc > threshold:
             threshold_alerts.append(
-                f"💸 Spend: {currency} {spend:.2f} / {threshold:.2f} threshold"
+                f"💸 Spend: {currency} {spend_inc:.2f} / {threshold:.2f} threshold"
             )
+        if round(spend_inc, 4) != sget("last_spend") or currency != sget(
+            "last_spend_currency"
+        ):
+            sset("last_spend", round(spend_inc, 4), config)
+            sset("last_spend_currency", currency, config)
     except Exception as e:
         threshold_alerts.append(f"⚠️ Cost check failed: {e}")
 
@@ -843,7 +853,7 @@ def check(key_file_path: str) -> None:
     # Spend is rounded to the nearest £1 in the signature so penny-level fluctuations
     # don't re-fire the same alert on every check cycle.
     _sig_threshold = [
-        a.replace(f"{currency} {spend:.2f}", f"{currency} {int(spend)}")
+        a.replace(f"{currency} {spend_inc:.2f}", f"{currency} {int(spend_inc)}")
         if spend is not None and "Spend:" in a
         else a
         for a in threshold_alerts

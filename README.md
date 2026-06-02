@@ -52,7 +52,8 @@ docker run -d \
 | `OCI_COMPARTMENT_OCID` | ✅ | — | Compartment to monitor for resources |
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | Bot token from [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | ✅ | — | Chat or user ID to send alerts to |
-| `COST_THRESHOLD_GBP` | | `5.0` | Monthly spend threshold in GBP |
+| `COST_THRESHOLD_GBP` | | `5.0` | Monthly spend threshold in GBP (compared against VAT-inclusive spend) |
+| `VAT_RATE` | | `0.20` | VAT rate applied to OCI ex-VAT amounts before display and threshold comparison |
 | `MAX_LB_COUNT` | | `1` | Max allowed active load balancers |
 | `MAX_FREE_PUBLIC_IPS` | | `2` | Unassigned reserved IPs before alerting (OCI free tier: 2) |
 | `MAX_OBJECT_STORAGE_GB` | | `18.0` | Object Storage alert threshold in GB (free tier limit: 20 GB) |

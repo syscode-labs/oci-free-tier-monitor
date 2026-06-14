@@ -10,6 +10,7 @@ Active OCI cost and resource monitor with Telegram alerts and auto-cleanup. Runs
 ## Features
 
 - **Cost alerting** — monthly spend vs a configurable GBP threshold
+- **Compute free-tier limits** — alerts above 2 Ampere A1 instances, 2 OCPUs, 12 GB RAM, or 2 E2 Micro instances
 - **Change-gated scheduled alerts** — enabled by default; repeated non-threshold findings only alert when they change
 - **Load balancer count** — alerts when active LBs exceed the free tier limit
 - **Orphaned reserved public IPs** — detects and auto-deletes unassigned IPs burning budget
@@ -58,6 +59,10 @@ docker run -d \
 | `MAX_LB_COUNT` | | `1` | Max allowed active load balancers |
 | `MAX_FREE_PUBLIC_IPS` | | `2` | Unassigned reserved IPs before alerting (OCI free tier: 2) |
 | `MAX_OBJECT_STORAGE_GB` | | `18.0` | Object Storage alert threshold in GB (free tier limit: 20 GB) |
+| `MAX_AMPERE_INSTANCES` | | `2` | Max Always Free Ampere A1 instances |
+| `MAX_AMPERE_OCPUS` | | `2` | Max total Always Free Ampere A1 OCPUs |
+| `MAX_AMPERE_MEMORY_GB` | | `12` | Max total Always Free Ampere A1 memory in GB |
+| `MAX_MICRO_INSTANCES` | | `2` | Max Always Free E2 Micro instances |
 | `ALERT_ON_CHANGE` | | `true` | When enabled, scheduled non-threshold findings alert only when the finding set changes |
 | `CHECK_INTERVAL_HOURS` | | `6` | How often to run checks |
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |

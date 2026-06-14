@@ -15,9 +15,11 @@ def load_monitor():
         "OCI_COMPARTMENT_OCID": "compartment",
         "TELEGRAM_BOT_TOKEN": "token",
         "TELEGRAM_CHAT_ID": "chat",
+        "VAT_RATE": "0",
     }
     os.environ.update(env)
     sys.modules.setdefault("requests", types.SimpleNamespace())
+    sys.modules.setdefault("pytz", types.SimpleNamespace())
     sys.modules.setdefault("oci", types.SimpleNamespace())
     sys.modules.pop("monitor", None)
     return importlib.import_module("monitor")
@@ -34,6 +36,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
         return mock.patch.multiple(
             self.monitor,
             monthly_spend=mock.Mock(return_value=(1.0, "GBP")),
+            compute_instances=mock.Mock(return_value=[]),
             load_balancers=mock.Mock(return_value=[]),
             orphaned_public_ips=mock.Mock(return_value=[]),
             orphaned_boot_volumes=mock.Mock(return_value=[]),
@@ -45,6 +48,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
             _save_report_to_bucket=mock.Mock(),
             save_state=mock.Mock(),
             send_telegram=mock.Mock(),
+            _in_quiet_hours=mock.Mock(return_value=False),
         )
 
     def test_repeated_non_threshold_findings_only_alert_when_changed(self):
@@ -84,6 +88,68 @@ class ScheduledAlertGatingTests(unittest.TestCase):
             self.monitor.check("/tmp/key.pem")
 
             self.assertEqual(self.monitor.send_telegram.call_count, 2)
+
+    def test_ampere_compute_above_new_free_tier_limits_alerts(self):
+        with self.patch_common_checks():
+            self.monitor.compute_instances.return_value = [
+                {
+                    "name": "ampere-1",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 2.0,
+                    "memory_gb": 12.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "ampere-2",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "ampere-3",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+            ]
+
+            self.monitor.check("/tmp/key.pem")
+
+            message = self.monitor.send_telegram.call_args.args[1]
+        self.assertIn("A1 instances: 3 / 2", message)
+        self.assertIn("A1 OCPUs: 4 / 2", message)
+        self.assertIn("A1 memory: 24 / 12 GB", message)
+
+    def test_compute_instances_include_flex_shape_resources(self):
+        shape_config = types.SimpleNamespace(ocpus=1.0, memory_in_gbs=6.0)
+        instance = types.SimpleNamespace(
+            display_name="ampere-1",
+            shape="VM.Standard.A1.Flex",
+            shape_config=shape_config,
+            lifecycle_state="RUNNING",
+        )
+        compute_client = mock.Mock()
+        compute_client.list_instances.return_value = types.SimpleNamespace(
+            data=[instance],
+            has_next_page=False,
+        )
+        self.monitor.oci = types.SimpleNamespace(
+            core=types.SimpleNamespace(
+                ComputeClient=mock.Mock(return_value=compute_client)
+            ),
+            pagination=types.SimpleNamespace(
+                list_call_get_all_results=mock.Mock(
+                    return_value=types.SimpleNamespace(data=[instance])
+                )
+            ),
+        )
+
+        instances = self.monitor.compute_instances({})
+
+        self.assertEqual(instances[0]["ocpus"], 1.0)
+        self.assertEqual(instances[0]["memory_gb"], 6.0)
 
 
 if __name__ == "__main__":

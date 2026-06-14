@@ -40,6 +40,10 @@ DEFAULTS = {
     "max_lb_count": int(os.environ.get("MAX_LB_COUNT", "1")),
     "max_free_public_ips": int(os.environ.get("MAX_FREE_PUBLIC_IPS", "2")),
     "max_object_storage_gb": float(os.environ.get("MAX_OBJECT_STORAGE_GB", "18.0")),
+    "max_ampere_instances": int(os.environ.get("MAX_AMPERE_INSTANCES", "2")),
+    "max_ampere_ocpus": float(os.environ.get("MAX_AMPERE_OCPUS", "2")),
+    "max_ampere_memory_gb": float(os.environ.get("MAX_AMPERE_MEMORY_GB", "12")),
+    "max_micro_instances": int(os.environ.get("MAX_MICRO_INSTANCES", "2")),
     "alert_on_change": os.environ.get("ALERT_ON_CHANGE", "true").lower()
     not in ("0", "false", "no"),
     "last_change_alert_signature": None,
@@ -422,11 +426,42 @@ def compute_instances(config: dict) -> list[dict]:
         client.list_instances,
         compartment_id=COMPARTMENT_OCID,
     ).data
-    return [
-        {"name": i.display_name, "shape": i.shape, "state": i.lifecycle_state}
-        for i in instances
-        if i.lifecycle_state not in ("TERMINATED", "TERMINATING")
-    ]
+    result = []
+    for instance in instances:
+        if instance.lifecycle_state in ("TERMINATED", "TERMINATING"):
+            continue
+        shape_config = getattr(instance, "shape_config", None)
+        result.append(
+            {
+                "name": instance.display_name,
+                "shape": instance.shape,
+                "ocpus": float(getattr(shape_config, "ocpus", 0) or 0),
+                "memory_gb": float(getattr(shape_config, "memory_in_gbs", 0) or 0),
+                "state": instance.lifecycle_state,
+            }
+        )
+    return result
+
+
+def compute_free_tier_breaches(instances: list[dict]) -> list[str]:
+    ampere = [i for i in instances if i["shape"] == "VM.Standard.A1.Flex"]
+    micro = [i for i in instances if i["shape"] == "VM.Standard.E2.1.Micro"]
+    ampere_ocpus = sum(i["ocpus"] for i in ampere)
+    ampere_memory_gb = sum(i["memory_gb"] for i in ampere)
+    breaches = []
+    if len(ampere) > sget("max_ampere_instances"):
+        breaches.append(f"A1 instances: {len(ampere)} / {sget('max_ampere_instances')}")
+    if ampere_ocpus > sget("max_ampere_ocpus"):
+        breaches.append(f"A1 OCPUs: {ampere_ocpus:g} / {sget('max_ampere_ocpus'):g}")
+    if ampere_memory_gb > sget("max_ampere_memory_gb"):
+        breaches.append(
+            f"A1 memory: {ampere_memory_gb:g} / {sget('max_ampere_memory_gb'):g} GB"
+        )
+    if len(micro) > sget("max_micro_instances"):
+        breaches.append(
+            f"E2 Micro instances: {len(micro)} / {sget('max_micro_instances')}"
+        )
+    return breaches
 
 
 # ── cleanup ───────────────────────────────────────────────────────────────────
@@ -549,6 +584,16 @@ def build_status_message(key_file_path: str) -> str:
         )
     except Exception as e:
         lines.append(f"⚠️ Spend: error — {e}")
+
+    try:
+        compute_breaches = compute_free_tier_breaches(compute_instances(config))
+        breached = breached or bool(compute_breaches)
+        lines.append(
+            f"{'🚨' if compute_breaches else '🖥️'} Compute: "
+            + (", ".join(compute_breaches) if compute_breaches else "within free tier")
+        )
+    except Exception as e:
+        lines.append(f"⚠️ Compute: error — {e}")
 
     try:
         lbs = load_balancers(config)
@@ -802,6 +847,11 @@ def check(key_file_path: str) -> None:
             sset("last_spend_currency", currency, config)
     except Exception as e:
         threshold_alerts.append(f"⚠️ Cost check failed: {e}")
+
+    try:
+        threshold_alerts.extend(compute_free_tier_breaches(compute_instances(config)))
+    except Exception as e:
+        threshold_alerts.append(f"⚠️ Compute check failed: {e}")
 
     try:
         lbs = load_balancers(config)

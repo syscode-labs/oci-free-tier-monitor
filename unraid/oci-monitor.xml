@@ -1,0 +1,83 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>oci-monitor</Name>
+  <Repository>ghcr.io/syscode-labs/oci-free-tier-monitor:latest</Repository>
+  <Registry>https://ghcr.io/</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/syscode-labs/oci-free-tier-monitor/issues</Support>
+  <Project>https://github.com/syscode-labs/oci-free-tier-monitor</Project>
+  <Overview>Monitors OCI free tier resource usage and costs. Sends Telegram alerts when spend thresholds are breached, load balancers exceed limits, or orphaned resources are detected. Supports auto-cleanup and on-demand status via Telegram bot commands.</Overview>
+  <Category>Tools: Status:</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/syscode-labs/oci-free-tier-monitor/main/unraid/oci-monitor.xml</TemplateURL>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/oci-monitor" Mode="rw"
+    Description="Persistent state storage." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/oci-monitor</Config>
+
+  <Config Name="OCI Tenancy OCID" Target="OCI_TENANCY_OCID" Default="" Mode=""
+    Description="Tenancy root OCID (ocid1.tenancy.oc1..)" Type="Variable" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="OCI User OCID" Target="OCI_USER_OCID" Default="" Mode=""
+    Description="API user OCID (ocid1.user.oc1..)" Type="Variable" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="OCI Fingerprint" Target="OCI_FINGERPRINT" Default="" Mode=""
+    Description="API key fingerprint (xx:xx:xx:..)" Type="Variable" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="OCI Region" Target="OCI_REGION" Default="uk-london-1" Mode=""
+    Description="OCI home region identifier." Type="Variable" Display="always" Required="true" Mask="false">uk-london-1</Config>
+
+  <Config Name="OCI API Key (PEM)" Target="OCI_API_KEY" Default="" Mode=""
+    Description="Full PEM private key content including its header and footer." Type="Variable" Display="always" Required="true" Mask="true"/>
+
+  <Config Name="OCI Compartment OCID" Target="OCI_COMPARTMENT_OCID" Default="" Mode=""
+    Description="Compartment to monitor (ocid1.compartment.oc1..)" Type="Variable" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="Telegram Bot Token" Target="TELEGRAM_BOT_TOKEN" Default="" Mode=""
+    Description="Bot token from @BotFather." Type="Variable" Display="always" Required="true" Mask="true"/>
+
+  <Config Name="Telegram Chat ID" Target="TELEGRAM_CHAT_ID" Default="" Mode=""
+    Description="Chat or user ID to send alerts to." Type="Variable" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="Cost Threshold (GBP)" Target="COST_THRESHOLD_GBP" Default="5.0" Mode=""
+    Description="Monthly spend threshold in GBP before alerting." Type="Variable" Display="advanced" Required="false" Mask="false">5.0</Config>
+
+  <Config Name="Max Load Balancers" Target="MAX_LB_COUNT" Default="1" Mode=""
+    Description="Max allowed active load balancers." Type="Variable" Display="advanced" Required="false" Mask="false">1</Config>
+
+  <Config Name="Max Free Public IPs" Target="MAX_FREE_PUBLIC_IPS" Default="2" Mode=""
+    Description="Unassigned reserved IPs before alerting (OCI free tier: 2)." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+
+  <Config Name="Max Object Storage (GB)" Target="MAX_OBJECT_STORAGE_GB" Default="18.0" Mode=""
+    Description="Object Storage alert threshold in GB (free tier limit: 20 GB)." Type="Variable" Display="advanced" Required="false" Mask="false">18.0</Config>
+  <Config Name="Max Ampere Instances" Target="MAX_AMPERE_INSTANCES" Default="2" Mode=""
+    Description="Max Always Free Ampere A1 instances." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+  <Config Name="Max Ampere OCPUs" Target="MAX_AMPERE_OCPUS" Default="2" Mode=""
+    Description="Max total Always Free Ampere A1 OCPUs." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+  <Config Name="Max Ampere Memory (GB)" Target="MAX_AMPERE_MEMORY_GB" Default="12" Mode=""
+    Description="Max total Always Free Ampere A1 memory in GB." Type="Variable" Display="advanced" Required="false" Mask="false">12</Config>
+  <Config Name="Max E2 Micro Instances" Target="MAX_MICRO_INSTANCES" Default="2" Mode=""
+    Description="Max Always Free E2 Micro instances." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+
+  <Config Name="Alert on Change Only" Target="ALERT_ON_CHANGE" Default="true" Mode=""
+    Description="Non-threshold findings alert only when they first appear, change, or clear." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+
+  <Config Name="Check Interval (hours)" Target="CHECK_INTERVAL_HOURS" Default="6" Mode=""
+    Description="How often to run checks." Type="Variable" Display="advanced" Required="false" Mask="false">6</Config>
+
+  <Config Name="OCI State Bucket" Target="OCI_STATE_BUCKET" Default="" Mode=""
+    Description="Object Storage bucket name for persisting state and cleanup reports (optional)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Account Label" Target="OCI_ACCOUNT_LABEL" Default="" Mode=""
+    Description="Display name shown in alerts — defaults to compartment name (optional)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>

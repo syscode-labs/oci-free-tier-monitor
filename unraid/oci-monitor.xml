@@ -41,7 +41,7 @@
     Description="Full PEM private key content including its header and footer." Type="Variable" Display="always" Required="true" Mask="true"/>
 
   <Config Name="OCI Compartment OCID" Target="OCI_COMPARTMENT_OCID" Default="" Mode=""
-    Description="Compartment to monitor (ocid1.compartment.oc1..)" Type="Variable" Display="always" Required="true" Mask="false"/>
+    Description="Compartment for cleanup/storage checks. Compute scans all accessible compartments and falls back to this compartment if discovery fails." Type="Variable" Display="always" Required="true" Mask="false"/>
 
   <Config Name="Telegram Bot Token" Target="TELEGRAM_BOT_TOKEN" Default="" Mode=""
     Description="Bot token from @BotFather." Type="Variable" Display="always" Required="true" Mask="true"/>

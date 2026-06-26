@@ -10,7 +10,7 @@ Active OCI cost and resource monitor with Telegram alerts and auto-cleanup. Runs
 ## Features
 
 - **Cost alerting** — monthly spend vs a configurable GBP threshold
-- **Compute free-tier limits** — alerts above 2 Ampere A1 instances, 2 OCPUs, 12 GB RAM, or 2 E2 Micro instances
+- **Compute free-tier limits** — scans all accessible compartments and alerts above 2 Ampere A1 instances, 2 OCPUs, 12 GB RAM, or 2 E2 Micro instances
 - **Change-gated scheduled alerts** — enabled by default; repeated non-threshold findings only alert when they change
 - **Load balancer count** — alerts when active LBs exceed the free tier limit
 - **Orphaned reserved public IPs** — detects and auto-deletes unassigned IPs burning budget
@@ -51,7 +51,7 @@ docker run -d \
 | `OCI_FINGERPRINT` | ✅ | — | API key fingerprint |
 | `OCI_REGION` | ✅ | `uk-london-1` | OCI home region |
 | `OCI_API_KEY` | ✅ | — | PEM private key content (full key including headers) |
-| `OCI_COMPARTMENT_OCID` | ✅ | — | Compartment to monitor for resources |
+| `OCI_COMPARTMENT_OCID` | ✅ | — | Compartment to monitor for compartment-scoped cleanup/storage checks; compute scans all accessible compartments and falls back to this compartment if discovery fails |
 | `TELEGRAM_BOT_TOKEN` | ✅ | — | Bot token from [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | ✅ | — | Chat or user ID to send alerts to |
 | `COST_THRESHOLD_GBP` | | `5.0` | Monthly spend threshold in GBP (compared against VAT-inclusive spend) |

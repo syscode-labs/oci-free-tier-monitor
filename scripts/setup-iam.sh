@@ -119,6 +119,8 @@ _upsert_policy() {
 
 heading "Tenancy-level policy"
 _upsert_policy "oci-monitor-tenancy" "$TENANCY_OCID" "OCI Monitor tenancy-level policy" \
+  "Allow group $GROUP to inspect compartments in tenancy" \
+  "Allow group $GROUP to read instance-family in tenancy" \
   "Allow group $GROUP to read usage-report in tenancy" \
   "Allow group $GROUP to read tenancies in tenancy" \
   "Allow group $GROUP to read objectstorage-namespaces in tenancy"

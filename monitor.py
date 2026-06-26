@@ -186,6 +186,49 @@ def fetch_os_namespace(config: dict) -> str:
     return client.get_namespace().data
 
 
+def _configured_compartment() -> dict:
+    return {
+        "id": COMPARTMENT_OCID,
+        "name": _account_label or "configured compartment",
+    }
+
+
+def accessible_compartments(config: dict) -> list[dict]:
+    if not hasattr(oci, "identity"):
+        return [_configured_compartment()]
+
+    client = oci.identity.IdentityClient(config)
+    try:
+        compartments = oci.pagination.list_call_get_all_results(
+            client.list_compartments,
+            compartment_id=TENANCY_OCID,
+            compartment_id_in_subtree=True,
+            access_level="ACCESSIBLE",
+        ).data
+    except Exception:
+        return [_configured_compartment()]
+
+    result = []
+    seen = set()
+    for compartment in compartments:
+        if getattr(compartment, "lifecycle_state", "ACTIVE") != "ACTIVE":
+            continue
+        compartment_id = getattr(compartment, "id", None)
+        if not compartment_id or compartment_id in seen:
+            continue
+        seen.add(compartment_id)
+        result.append(
+            {
+                "id": compartment_id,
+                "name": getattr(compartment, "name", None)
+                or getattr(compartment, "display_name", None)
+                or compartment_id,
+            }
+        )
+
+    return result or [_configured_compartment()]
+
+
 def monthly_spend_breakdown(config: dict) -> tuple[list[tuple[str, float]], str]:
     client = oci.usage_api.UsageapiClient(config)
     today = datetime.datetime.now(datetime.timezone.utc).replace(
@@ -422,24 +465,30 @@ def object_storage_usage_gb(config: dict) -> float:
 
 def compute_instances(config: dict) -> list[dict]:
     client = oci.core.ComputeClient(config)
-    instances = oci.pagination.list_call_get_all_results(
-        client.list_instances,
-        compartment_id=COMPARTMENT_OCID,
-    ).data
     result = []
-    for instance in instances:
-        if instance.lifecycle_state in ("TERMINATED", "TERMINATING"):
+    for compartment in accessible_compartments(config):
+        try:
+            instances = oci.pagination.list_call_get_all_results(
+                client.list_instances,
+                compartment_id=compartment["id"],
+            ).data
+        except Exception:
             continue
-        shape_config = getattr(instance, "shape_config", None)
-        result.append(
-            {
-                "name": instance.display_name,
-                "shape": instance.shape,
-                "ocpus": float(getattr(shape_config, "ocpus", 0) or 0),
-                "memory_gb": float(getattr(shape_config, "memory_in_gbs", 0) or 0),
-                "state": instance.lifecycle_state,
-            }
-        )
+        for instance in instances:
+            if instance.lifecycle_state in ("TERMINATED", "TERMINATING"):
+                continue
+            shape_config = getattr(instance, "shape_config", None)
+            result.append(
+                {
+                    "name": instance.display_name,
+                    "shape": instance.shape,
+                    "ocpus": float(getattr(shape_config, "ocpus", 0) or 0),
+                    "memory_gb": float(getattr(shape_config, "memory_in_gbs", 0) or 0),
+                    "state": instance.lifecycle_state,
+                    "compartment_id": compartment["id"],
+                    "compartment_name": compartment["name"],
+                }
+            )
     return result
 
 
@@ -688,7 +737,9 @@ def build_scan_message(key_file_path: str) -> str:
         instances = compute_instances(config)
         lines.append(f"\n*Compute ({len(instances)})*")
         for i in instances:
-            lines.append(f"  • {i['name']} `{i['shape']}` {i['state']}")
+            compartment = i.get("compartment_name")
+            suffix = f" — {compartment}" if compartment else ""
+            lines.append(f"  • {i['name']} `{i['shape']}` {i['state']}{suffix}")
     except Exception as e:
         lines.append(f"⚠️ Compute: {e}")
 

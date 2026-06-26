@@ -18,9 +18,9 @@ def load_monitor():
         "VAT_RATE": "0",
     }
     os.environ.update(env)
-    sys.modules.setdefault("requests", types.SimpleNamespace())
-    sys.modules.setdefault("pytz", types.SimpleNamespace())
-    sys.modules.setdefault("oci", types.SimpleNamespace())
+    sys.modules["requests"] = types.SimpleNamespace()
+    sys.modules["pytz"] = types.SimpleNamespace()
+    sys.modules["oci"] = types.SimpleNamespace()
     sys.modules.pop("monitor", None)
     return importlib.import_module("monitor")
 
@@ -150,6 +150,137 @@ class ScheduledAlertGatingTests(unittest.TestCase):
 
         self.assertEqual(instances[0]["ocpus"], 1.0)
         self.assertEqual(instances[0]["memory_gb"], 6.0)
+
+    def test_compute_instances_scan_all_accessible_compartments(self):
+        compartment_a = types.SimpleNamespace(
+            id="compartment-a",
+            name="homelab",
+            lifecycle_state="ACTIVE",
+        )
+        compartment_b = types.SimpleNamespace(
+            id="compartment-b",
+            name="talos",
+            lifecycle_state="ACTIVE",
+        )
+        shape_config = types.SimpleNamespace(ocpus=1.0, memory_in_gbs=6.0)
+        instance = types.SimpleNamespace(
+            display_name="oci-talos-cp-1",
+            shape="VM.Standard.A1.Flex",
+            shape_config=shape_config,
+            lifecycle_state="RUNNING",
+        )
+        compute_client = mock.Mock()
+        identity_client = mock.Mock()
+
+        def list_instances(*, compartment_id):
+            data = [instance] if compartment_id == "compartment-b" else []
+            return types.SimpleNamespace(data=data)
+
+        compute_client.list_instances.side_effect = list_instances
+        self.monitor.oci = types.SimpleNamespace(
+            core=types.SimpleNamespace(
+                ComputeClient=mock.Mock(return_value=compute_client)
+            ),
+            identity=types.SimpleNamespace(
+                IdentityClient=mock.Mock(return_value=identity_client)
+            ),
+            pagination=types.SimpleNamespace(
+                list_call_get_all_results=mock.Mock(
+                    side_effect=[
+                        types.SimpleNamespace(data=[compartment_a, compartment_b]),
+                        types.SimpleNamespace(data=[]),
+                        types.SimpleNamespace(data=[instance]),
+                    ]
+                )
+            ),
+        )
+
+        instances = self.monitor.compute_instances({})
+
+        self.assertEqual(len(instances), 1)
+        self.assertEqual(instances[0]["name"], "oci-talos-cp-1")
+        self.assertEqual(instances[0]["compartment_name"], "talos")
+        self.assertEqual(instances[0]["compartment_id"], "compartment-b")
+
+    def test_compute_instances_skips_compartments_that_cannot_list_instances(self):
+        compartment_a = types.SimpleNamespace(
+            id="compartment-a",
+            name="homelab",
+            lifecycle_state="ACTIVE",
+        )
+        compartment_b = types.SimpleNamespace(
+            id="compartment-b",
+            name="talos",
+            lifecycle_state="ACTIVE",
+        )
+        shape_config = types.SimpleNamespace(ocpus=1.0, memory_in_gbs=6.0)
+        instance = types.SimpleNamespace(
+            display_name="oci-talos-cp-1",
+            shape="VM.Standard.A1.Flex",
+            shape_config=shape_config,
+            lifecycle_state="RUNNING",
+        )
+        compute_client = mock.Mock()
+        identity_client = mock.Mock()
+
+        def list_instances(*, compartment_id):
+            if compartment_id == "compartment-a":
+                raise Exception("NotAuthorizedOrNotFound")
+            return types.SimpleNamespace(data=[instance])
+
+        compute_client.list_instances.side_effect = list_instances
+        self.monitor.oci = types.SimpleNamespace(
+            core=types.SimpleNamespace(
+                ComputeClient=mock.Mock(return_value=compute_client)
+            ),
+            identity=types.SimpleNamespace(
+                IdentityClient=mock.Mock(return_value=identity_client)
+            ),
+            pagination=types.SimpleNamespace(
+                list_call_get_all_results=mock.Mock(
+                    side_effect=[
+                        types.SimpleNamespace(data=[compartment_a, compartment_b]),
+                        Exception("NotAuthorizedOrNotFound"),
+                        types.SimpleNamespace(data=[instance]),
+                    ]
+                )
+            ),
+        )
+
+        instances = self.monitor.compute_instances({})
+
+        self.assertEqual(len(instances), 1)
+        self.assertEqual(instances[0]["compartment_name"], "talos")
+
+    def test_scan_message_reports_compute_compartment(self):
+        with mock.patch.multiple(
+            self.monitor,
+            build_oci_config=mock.Mock(return_value={}),
+            compute_instances=mock.Mock(
+                return_value=[
+                    {
+                        "name": "oci-talos-cp-1",
+                        "shape": "VM.Standard.A1.Flex",
+                        "ocpus": 1.0,
+                        "memory_gb": 6.0,
+                        "state": "RUNNING",
+                        "compartment_name": "talos",
+                        "compartment_id": "compartment-b",
+                    }
+                ]
+            ),
+            load_balancers=mock.Mock(return_value=[]),
+            orphaned_public_ips=mock.Mock(return_value=[]),
+            orphaned_boot_volumes=mock.Mock(return_value=[]),
+            orphaned_block_volumes=mock.Mock(return_value=[]),
+            volume_backups=mock.Mock(return_value=[]),
+            custom_images=mock.Mock(return_value=[]),
+            object_storage_usage_gb=mock.Mock(return_value=0.0),
+        ):
+            message = self.monitor.build_scan_message("/tmp/key.pem")
+
+        self.assertIn("*Compute (1)*", message)
+        self.assertIn("oci-talos-cp-1 `VM.Standard.A1.Flex` RUNNING — talos", message)
 
 
 if __name__ == "__main__":

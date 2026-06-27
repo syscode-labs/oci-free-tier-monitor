@@ -69,8 +69,59 @@ HELP_TEXT = """\
 /lbmax <n> — set max allowed load balancers
 /silence — mute scheduled alerts for this calendar month
 /unsilence — re-enable scheduled alerts
-/help — show this message\
+/help [command] — show this message, or detail for a command\
 """
+
+HELP_DETAIL: dict[str, str] = {
+    "autocleanup": """\
+*Auto-cleanup*
+Automatically deletes orphaned resources that accrue cost with no benefit:
+  • *Unassigned reserved public IPs* — OCI charges for reserved IPs not attached to an instance
+  • *Unattached boot volumes* — left behind after an instance is terminated
+  • *Unattached block volumes* — data volumes not mounted to any instance
+
+Runs on every scheduled check (default every 6 hours). Deletions are logged; if `OCI_STATE_BUCKET` is set a JSON report is saved to the bucket.
+
+`/autocleanup` — current status
+`/autocleanup on` — enable
+`/autocleanup off` — disable (use /scan to review manually)\
+""",
+    "status": """\
+*Status*
+Snapshot of current resource usage and spend:
+  • Monthly spend (exc. and inc. VAT) vs your threshold
+  • Compute — checks all accessible compartments against Always Free limits
+  • Load balancers — count, empty LBs, bandwidth tier
+  • Unassigned reserved public IPs
+  • Orphaned volumes and boot volumes
+  • Volume backups
+  • Custom images (flags unused ones)
+  • Object Storage usage vs limit
+
+Use `/threshold` and `/lbmax` to adjust the alert thresholds.\
+""",
+    "scan": """\
+*Scan*
+Full resource audit — same checks as /status but lists every resource individually with details (shapes, sizes, backend counts, etc.).\
+""",
+    "threshold": """\
+*Threshold*
+Sets the monthly spend limit in GBP. An alert fires when your VAT-inclusive spend exceeds this amount.
+
+Usage: `/threshold 10.0`\
+""",
+    "lbmax": """\
+*LB max*
+Sets the maximum number of active load balancers before alerting. OCI Always Free includes one 10 Mbps load balancer.
+
+Usage: `/lbmax 1`\
+""",
+    "silence": """\
+*Silence / Unsilence*
+`/silence` — suppresses all scheduled alert checks for the current calendar month. On-demand commands (/status, /scan) still work.
+`/unsilence` — re-enables scheduled alerts immediately.\
+""",
+}
 
 
 # ── state (local + OCI bucket) ───────────────────────────────────────────────
@@ -1181,7 +1232,8 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
         reply = "🔔 Scheduled alerts re-enabled."
 
     elif cmd == "/help":
-        reply = HELP_TEXT
+        topic = parts[1].lstrip("/") if len(parts) > 1 else ""
+        reply = HELP_DETAIL.get(topic, HELP_TEXT)
 
     else:
         return

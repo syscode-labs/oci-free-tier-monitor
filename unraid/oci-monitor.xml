@@ -80,4 +80,10 @@
 
   <Config Name="Account Label" Target="OCI_ACCOUNT_LABEL" Default="" Mode=""
     Description="Display name shown in alerts — defaults to compartment name (optional)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Discord Webhook URL" Target="DISCORD_WEBHOOK_URL" Default="" Mode=""
+    Description="Discord webhook URL for alert notifications (optional). Commands remain Telegram-only." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+
+  <Config Name="Slack Webhook URL" Target="SLACK_WEBHOOK_URL" Default="" Mode=""
+    Description="Slack incoming webhook URL for alert notifications (optional). Commands remain Telegram-only." Type="Variable" Display="advanced" Required="false" Mask="true"/>
 </Container>

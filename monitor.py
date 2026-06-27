@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import io
+import re
 import json
 import time
 import tempfile
@@ -16,8 +17,10 @@ FINGERPRINT = os.environ["OCI_FINGERPRINT"]
 REGION = os.environ.get("OCI_REGION", "uk-london-1")
 API_KEY_PEM = os.environ["OCI_API_KEY"]
 COMPARTMENT_OCID = os.environ["OCI_COMPARTMENT_OCID"]
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 INTERVAL_HOURS = float(os.environ.get("CHECK_INTERVAL_HOURS", "6"))
 OCI_STATE_BUCKET = os.environ.get("OCI_STATE_BUCKET", "")
 OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
@@ -612,6 +615,32 @@ def send_telegram(chat_id: str, message: str) -> None:
             print(f"[tg] send failed chat={chat_id}: {resp.text[:200]}", flush=True)
 
 
+_TG_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def send_discord(message: str) -> None:
+    text = _TG_LINK.sub(r"\1 <\2>", message)[:2000]
+    resp = requests.post(DISCORD_WEBHOOK_URL, json={"content": text}, timeout=10)
+    if not resp.ok:
+        print(f"[discord] send failed: {resp.text[:200]}", flush=True)
+
+
+def send_slack(message: str) -> None:
+    text = _TG_LINK.sub(r"<\2|\1>", message)
+    resp = requests.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=10)
+    if not resp.ok:
+        print(f"[slack] send failed: {resp.text[:200]}", flush=True)
+
+
+def notify(message: str) -> None:
+    if BOT_TOKEN and CHAT_ID:
+        send_telegram(CHAT_ID, message)
+    if DISCORD_WEBHOOK_URL:
+        send_discord(message)
+    if SLACK_WEBHOOK_URL:
+        send_slack(message)
+
+
 def billing_url() -> str:
     return f"https://cloud.oracle.com/invoices-and-orders/invoices?region={REGION}&tenant={_tenancy_slug}"
 
@@ -1017,10 +1046,10 @@ def check(key_file_path: str) -> None:
         name = _account_label or "OCI"
         body = f"🚨 *{name} alert*\n" + "\n".join(alerts) + cleanup_note
         body += f"\n[View billing]({billing_url()})"
-        send_telegram(CHAT_ID, body)
+        notify(body)
     elif cleanup_note:
         name = _account_label or "OCI"
-        send_telegram(CHAT_ID, f"🤖 *{name} cleanup*{cleanup_note}")
+        notify(f"🤖 *{name} cleanup*{cleanup_note}")
 
     # EOM invoice preview — once per month, last 2 days only
     if near_eom and spend is not None and spend_inc > 0:
@@ -1036,10 +1065,10 @@ def check(key_file_path: str) -> None:
                     for service, amount in breakdown:
                         lines.append(f"  • {service} — {currency} {amount:.2f}")
                 lines.append(f"\n[View billing]({billing_url()})")
-                send_telegram(CHAT_ID, "\n".join(lines))
+                notify("\n".join(lines))
                 sset("last_eom_invoice_month", current_month, config)
             except Exception as e:
-                send_telegram(CHAT_ID, f"⚠️ EOM invoice preview failed: {e}")
+                notify(f"⚠️ EOM invoice preview failed: {e}")
 
 
 # ── command handler ───────────────────────────────────────────────────────────
@@ -1180,15 +1209,16 @@ def main() -> None:
 
         load_state(config)
 
-        threading.Thread(
-            target=poll_commands, args=(key_file_path,), daemon=True
-        ).start()
+        if BOT_TOKEN and CHAT_ID:
+            threading.Thread(
+                target=poll_commands, args=(key_file_path,), daemon=True
+            ).start()
 
         while True:
             try:
                 check(key_file_path)
             except Exception as e:
-                send_telegram(CHAT_ID, f"⚠️ *OCI monitor error*: {e}")
+                notify(f"⚠️ *OCI monitor error*: {e}")
             time.sleep(INTERVAL_HOURS * 3600)
     finally:
         os.unlink(key_file_path)

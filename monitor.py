@@ -69,6 +69,7 @@ HELP_TEXT = """\
 /lbmax <n> — set max allowed load balancers
 /silence — mute scheduled alerts for this calendar month
 /unsilence — re-enable scheduled alerts
+/cleanup images — delete all unused custom images
 /help [command] — show this message, or detail for a command\
 """
 
@@ -115,6 +116,10 @@ Usage: `/threshold 10.0`\
 Sets the maximum number of active load balancers before alerting. OCI Always Free includes one 10 Mbps load balancer.
 
 Usage: `/lbmax 1`\
+""",
+    "cleanup": """\
+*Cleanup*
+`/cleanup images` — permanently deletes all custom images not currently in use by any instance. This is irreversible. Use `/scan` first to review what will be removed.\
 """,
     "silence": """\
 *Silence / Unsilence*
@@ -611,6 +616,18 @@ def _cleanup_block_volumes(config: dict, vols: list[dict]) -> tuple[list, list]:
             deleted.append(v)
         except Exception as e:
             errors.append({"item": v, "error": str(e)})
+    return deleted, errors
+
+
+def _cleanup_images(config: dict, images: list[dict]) -> tuple[list, list]:
+    client = oci.core.ComputeClient(config)
+    deleted, errors = [], []
+    for img in images:
+        try:
+            client.delete_image(img["id"])
+            deleted.append(img)
+        except Exception as e:
+            errors.append({"item": img, "error": str(e)})
     return deleted, errors
 
 
@@ -1230,6 +1247,31 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
     elif cmd == "/unsilence":
         sset("silenced_month", None, config)
         reply = "🔔 Scheduled alerts re-enabled."
+
+    elif cmd == "/cleanup":
+        sub = parts[1] if len(parts) > 1 else ""
+        if sub == "images":
+            try:
+                imgs = custom_images(config)
+                unused = [i for i in imgs if not i["in_use"]]
+                if not unused:
+                    reply = "✅ No unused custom images found."
+                else:
+                    deleted, errors = _cleanup_images(config, unused)
+                    lines = [f"🗑️ Deleted {len(deleted)} custom image(s):"]
+                    for img in deleted:
+                        lines.append(f"  • {img['name']} ({img['size_gb']} GB)")
+                    if errors:
+                        lines.append(f"\n⚠️ {len(errors)} failed:")
+                        for err in errors:
+                            lines.append(
+                                f"  • {err['item']['name']}: {err['error'][:80]}"
+                            )
+                    reply = "\n".join(lines)
+            except Exception as e:
+                reply = f"⚠️ Error: {_short_err(e)}"
+        else:
+            reply = "Usage: `/cleanup images`"
 
     elif cmd == "/help":
         topic = parts[1].lstrip("/") if len(parts) > 1 else ""

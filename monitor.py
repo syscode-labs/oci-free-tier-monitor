@@ -55,6 +55,7 @@ DEFAULTS = {
     "last_spend_currency": "GBP",
     "last_eom_invoice_month": None,
     "silenced_month": None,
+    "last_instance_snapshot": None,
     "auto_cleanup": True,
 }
 
@@ -489,6 +490,7 @@ def compute_instances(config: dict) -> list[dict]:
             shape_config = getattr(instance, "shape_config", None)
             result.append(
                 {
+                    "id": instance.id,
                     "name": instance.display_name,
                     "shape": instance.shape,
                     "ocpus": float(getattr(shape_config, "ocpus", 0) or 0),
@@ -895,6 +897,27 @@ def _alert_signature(alerts: list[str]) -> str:
     return json.dumps(alerts, sort_keys=True, separators=(",", ":"))
 
 
+def _instance_diff(old: dict, new: dict) -> list[str]:
+    msgs = []
+    for iid in set(new) - set(old):
+        i = new[iid]
+        msgs.append(
+            f"🟢 Instance added: {i['name']} `{i['shape']}` {i['state']} — {i['compartment']}"
+        )
+    for iid in set(old) - set(new):
+        i = old[iid]
+        msgs.append(
+            f"🔴 Instance removed: {i['name']} `{i['shape']}` — {i['compartment']}"
+        )
+    for iid in set(old) & set(new):
+        o, n = old[iid], new[iid]
+        if o["state"] != n["state"]:
+            msgs.append(
+                f"🔄 {n['name']}: {o['state']} → {n['state']} — {n['compartment']}"
+            )
+    return msgs
+
+
 def _is_near_end_of_month(days: int = 2) -> bool:
     today = datetime.date.today()
     next_month = (today.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
@@ -935,7 +958,25 @@ def check(key_file_path: str) -> None:
         threshold_alerts.append(f"⚠️ Cost check failed: {e}")
 
     try:
-        threshold_alerts.extend(compute_free_tier_breaches(compute_instances(config)))
+        instances = compute_instances(config)
+        threshold_alerts.extend(compute_free_tier_breaches(instances))
+        snapshot = {
+            i["id"]: {
+                "name": i["name"],
+                "shape": i["shape"],
+                "state": i["state"],
+                "compartment": i.get("compartment_name", ""),
+            }
+            for i in instances
+        }
+        last_snapshot = sget("last_instance_snapshot")
+        if last_snapshot is None:
+            sset("last_instance_snapshot", snapshot, config)
+        else:
+            diff = _instance_diff(last_snapshot, snapshot)
+            if diff:
+                change_alerts.extend(diff)
+                sset("last_instance_snapshot", snapshot, config)
     except Exception as e:
         threshold_alerts.append(f"⚠️ Compute check failed: {e}")
 

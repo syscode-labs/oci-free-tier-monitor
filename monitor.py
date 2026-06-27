@@ -157,6 +157,12 @@ def _in_quiet_hours() -> bool:
 # ── OCI helpers ───────────────────────────────────────────────────────────────
 
 
+def _short_err(e: Exception) -> str:
+    if hasattr(e, "status") and hasattr(e, "code"):  # OCI ServiceError
+        return f"{e.status} {e.code}"
+    return str(e)[:120]
+
+
 def build_oci_config(key_file_path: str) -> dict:
     return {
         "user": USER_OCID,
@@ -632,7 +638,7 @@ def build_status_message(key_file_path: str) -> str:
             f"{'💸' if over else '💷'} Spend: {currency} {spend_inc:.2f} / {threshold:.2f}{'  ⚠️' if over else ''}"
         )
     except Exception as e:
-        lines.append(f"⚠️ Spend: error — {e}")
+        lines.append(f"⚠️ Spend: error — {_short_err(e)}")
 
     try:
         compute_breaches = compute_free_tier_breaches(compute_instances(config))
@@ -642,7 +648,7 @@ def build_status_message(key_file_path: str) -> str:
             + (", ".join(compute_breaches) if compute_breaches else "within free tier")
         )
     except Exception as e:
-        lines.append(f"⚠️ Compute: error — {e}")
+        lines.append(f"⚠️ Compute: error — {_short_err(e)}")
 
     try:
         lbs = load_balancers(config)
@@ -661,7 +667,7 @@ def build_status_message(key_file_path: str) -> str:
             f"{'🚨' if warn else '⚖️'} Load balancers: {label}{'  ⚠️' if warn else ''}"
         )
     except Exception as e:
-        lines.append(f"⚠️ LBs: error — {e}")
+        lines.append(f"⚠️ LBs: error — {_short_err(e)}")
 
     try:
         ips = orphaned_public_ips(config)
@@ -671,7 +677,7 @@ def build_status_message(key_file_path: str) -> str:
             f"{'🚨' if over else '🌐'} Unassigned IPs: {len(ips)}{'  ⚠️' if over else ''}"
         )
     except Exception as e:
-        lines.append(f"⚠️ Public IPs: error — {e}")
+        lines.append(f"⚠️ Public IPs: error — {_short_err(e)}")
 
     try:
         orphan_gb = sum(
@@ -684,7 +690,7 @@ def build_status_message(key_file_path: str) -> str:
             f"{'🚨' if over else '💾'} Orphaned volumes: {orphan_gb} GB{'  ⚠️' if over else ''}"
         )
     except Exception as e:
-        lines.append(f"⚠️ Volumes: error — {e}")
+        lines.append(f"⚠️ Volumes: error — {_short_err(e)}")
 
     try:
         backups = volume_backups(config)
@@ -695,7 +701,7 @@ def build_status_message(key_file_path: str) -> str:
             f"{'🚨' if over else '🗂️'} Backups: {len(backups)} ({backup_gb:.0f} GB){'  ⚠️' if over else ''}"
         )
     except Exception as e:
-        lines.append(f"⚠️ Backups: error — {e}")
+        lines.append(f"⚠️ Backups: error — {_short_err(e)}")
 
     try:
         imgs = custom_images(config)
@@ -709,7 +715,7 @@ def build_status_message(key_file_path: str) -> str:
         )
         lines.append(f"{'🚨' if over else '🖼️'} Custom images: {label}")
     except Exception as e:
-        lines.append(f"⚠️ Images: error — {e}")
+        lines.append(f"⚠️ Images: error — {_short_err(e)}")
 
     try:
         max_os = sget("max_object_storage_gb")
@@ -720,7 +726,7 @@ def build_status_message(key_file_path: str) -> str:
             f"{'🚨' if over else '🗄️'} Object Storage: {usage_gb:.1f} / {max_os:.0f} GB{'  ⚠️' if over else ''}"
         )
     except Exception as e:
-        lines.append(f"⚠️ Object Storage: error — {e}")
+        lines.append(f"⚠️ Object Storage: error — {_short_err(e)}")
 
     if is_silenced():
         lines.append("🔕 Alerts silenced this month")

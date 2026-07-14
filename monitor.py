@@ -381,6 +381,106 @@ def load_balancers(config: dict) -> list[dict]:
     return result
 
 
+# ── Site-to-Site VPN detections (plan 2026-07-13, Task 8) ─────────────────────
+# The OCI→home VPN is Always Free; these checks guard against drift into paid
+# resources (NAT GW, NLB) or over-broad routing, not against the VPN itself.
+
+# Prefixes the VPN path is allowed to route to a DRG. Anything broader — or
+# 0.0.0.0/0 — is an alert. Omni target /32 + the OCI VPN subnet/secondary CIDR.
+VPN_APPROVED_DRG_PREFIXES = ("100.72.134.50/32", "10.44.1.0/24", "10.44.0.0/16")
+
+
+def drgs(config: dict) -> list[dict]:
+    client = oci.core.VirtualNetworkClient(config)
+    items = oci.pagination.list_call_get_all_results(
+        client.list_drgs, compartment_id=COMPARTMENT_OCID
+    ).data
+    return [
+        {"id": d.id, "name": d.display_name, "state": d.lifecycle_state}
+        for d in items
+        if d.lifecycle_state not in ("TERMINATED", "TERMINATING")
+    ]
+
+
+def ipsec_connections(config: dict) -> list[dict]:
+    # Presence-only. Tunnel health needs extra IAM (inspect ipsec-connections /
+    # read virtual-network-family); degrade to presence rather than require it.
+    client = oci.core.VirtualNetworkClient(config)
+    items = oci.pagination.list_call_get_all_results(
+        client.list_ip_sec_connections, compartment_id=COMPARTMENT_OCID
+    ).data
+    return [
+        {"id": c.id, "name": c.display_name, "state": c.lifecycle_state}
+        for c in items
+        if c.lifecycle_state not in ("TERMINATED", "TERMINATING")
+    ]
+
+
+def nat_gateways(config: dict) -> list[dict]:
+    client = oci.core.VirtualNetworkClient(config)
+    items = oci.pagination.list_call_get_all_results(
+        client.list_nat_gateways, compartment_id=COMPARTMENT_OCID
+    ).data
+    return [
+        {"id": n.id, "name": n.display_name, "state": n.lifecycle_state}
+        for n in items
+        if n.lifecycle_state not in ("TERMINATED", "TERMINATING")
+    ]
+
+
+def network_load_balancers(config: dict) -> list[dict]:
+    client = oci.network_load_balancer.NetworkLoadBalancerClient(config)
+    items = oci.pagination.list_call_get_all_results(
+        client.list_network_load_balancers, compartment_id=COMPARTMENT_OCID
+    ).data
+    return [
+        {"id": n.id, "name": n.display_name, "state": n.lifecycle_state}
+        for n in items
+        if n.lifecycle_state not in ("DELETED", "DELETING")
+    ]
+
+
+def drg_route_alerts(config: dict, drg_ids: set[str]) -> list[str]:
+    client = oci.core.VirtualNetworkClient(config)
+    rts = oci.pagination.list_call_get_all_results(
+        client.list_route_tables, compartment_id=COMPARTMENT_OCID
+    ).data
+    rules = [
+        {
+            "destination": r.destination,
+            "network_entity_id": r.network_entity_id,
+            "route_table": rt.display_name,
+        }
+        for rt in rts
+        for r in (rt.route_rules or [])
+    ]
+    return classify_drg_routes(rules, drg_ids, VPN_APPROVED_DRG_PREFIXES)
+
+
+def classify_drg_routes(
+    rules: list[dict], drg_ids: set[str], approved_prefixes: tuple[str, ...]
+) -> list[str]:
+    """Pure: flag route rules sending an over-broad / unapproved prefix to a DRG.
+
+    A rule targets a DRG when its network_entity_id is a known DRG OCID or looks
+    like one (``.drg.`` segment) — so it still fires if DRG listing was denied.
+    """
+    alerts = []
+    for r in rules:
+        target = r.get("network_entity_id") or ""
+        dest = r.get("destination") or ""
+        if target not in drg_ids and ".drg." not in target:
+            continue
+        rt = r.get("route_table", "?")
+        if dest == "0.0.0.0/0":
+            alerts.append(f"🕳️ Route {rt}: 0.0.0.0/0 → DRG (over-broad VPN route)")
+        elif dest not in approved_prefixes:
+            alerts.append(
+                f"🕳️ Route {rt}: {dest} → DRG (not in approved Omni/VPN prefixes)"
+            )
+    return alerts
+
+
 def orphaned_public_ips(config: dict) -> list[dict]:
     client = oci.core.VirtualNetworkClient(config)
     ips = oci.pagination.list_call_get_all_results(
@@ -940,6 +1040,23 @@ def build_scan_message(key_file_path: str) -> str:
     except Exception as e:
         lines.append(f"⚠️ Object Storage: {e}")
 
+    try:
+        drg_list = drgs(config)
+        ipsec_list = ipsec_connections(config)
+        nat_list = nat_gateways(config)
+        nlb_list = network_load_balancers(config)
+        if drg_list or ipsec_list or nat_list or nlb_list:
+            lines.append("\n*Site-to-Site VPN*")
+            lines.append(f"  • DRGs: {len(drg_list)}   IPSec: {len(ipsec_list)}")
+            if nat_list:
+                lines.append(f"  • ⚠️ NAT Gateway: {len(nat_list)} (not approved)")
+            if nlb_list:
+                lines.append(f"  • ⚠️ Network LB: {len(nlb_list)} (not approved)")
+        else:
+            lines.append("\n*Site-to-Site VPN*: none")
+    except Exception as e:
+        lines.append(f"⚠️ VPN: {e}")
+
     return "\n".join(lines)
 
 
@@ -1114,6 +1231,24 @@ def check(key_file_path: str) -> None:
             )
     except Exception as e:
         threshold_alerts.append(f"⚠️ Object Storage check failed: {e}")
+
+    try:
+        drg_list = drgs(config)
+        ipsec_list = ipsec_connections(config)
+        if nat_gateways(config):
+            threshold_alerts.append(
+                "🚧 NAT Gateway present (not approved for VPN path)"
+            )
+        if network_load_balancers(config):
+            threshold_alerts.append("⚖️ Network Load Balancer present (not approved)")
+        threshold_alerts.extend(drg_route_alerts(config, {d["id"] for d in drg_list}))
+        if drg_list or ipsec_list:
+            change_alerts.append(
+                f"🔐 VPN present: {len(drg_list)} DRG, {len(ipsec_list)} IPSec "
+                "(Always Free; outbound transfer advisory, not a hard cap)"
+            )
+    except Exception as e:
+        threshold_alerts.append(f"⚠️ VPN check failed: {e}")
 
     # Gate change_alerts on state change (existing behaviour)
     change_signature = _alert_signature(change_alerts)

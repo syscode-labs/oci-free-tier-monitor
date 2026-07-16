@@ -457,6 +457,38 @@ def drg_route_alerts(config: dict, drg_ids: set[str]) -> list[str]:
     return classify_drg_routes(rules, drg_ids, VPN_APPROVED_DRG_PREFIXES)
 
 
+def classify_vpn_tunnels(tunnels: list[dict]) -> list[str]:
+    # Pure: alert on any Site-to-Site VPN tunnel not UP. `tunnels` is a list of
+    # {"ipsec": str, "tunnel": str, "status": str}.
+    return [
+        f"🔻 VPN tunnel down: {t['ipsec']}/{t['tunnel']} (status={t['status']})"
+        for t in tunnels
+        if t["status"] != "UP"
+    ]
+
+
+def vpn_tunnel_alerts(config: dict, ipsec_list: list[dict]) -> list[str]:
+    # Tunnel-liveness watch (complements the presence/drift checks). Reading
+    # tunnel status needs read on ipsec tunnels; degrade to a soft note if IAM
+    # denies rather than crash the whole VPN check.
+    client = oci.core.VirtualNetworkClient(config)
+    tunnels: list[dict] = []
+    notes: list[str] = []
+    for ipsc in ipsec_list:
+        try:
+            for t in client.list_ip_sec_connection_tunnels(ipsc["id"]).data:
+                tunnels.append(
+                    {
+                        "ipsec": ipsc["name"],
+                        "tunnel": t.display_name,
+                        "status": t.status,
+                    }
+                )
+        except Exception as e:
+            notes.append(f"⚠️ VPN tunnel status unavailable ({ipsc['name']}): {e}")
+    return classify_vpn_tunnels(tunnels) + notes
+
+
 def classify_drg_routes(
     rules: list[dict], drg_ids: set[str], approved_prefixes: tuple[str, ...]
 ) -> list[str]:
@@ -1242,6 +1274,7 @@ def check(key_file_path: str) -> None:
         if network_load_balancers(config):
             threshold_alerts.append("⚖️ Network Load Balancer present (not approved)")
         threshold_alerts.extend(drg_route_alerts(config, {d["id"] for d in drg_list}))
+        threshold_alerts.extend(vpn_tunnel_alerts(config, ipsec_list))
         if drg_list or ipsec_list:
             change_alerts.append(
                 f"🔐 VPN present: {len(drg_list)} DRG, {len(ipsec_list)} IPSec "

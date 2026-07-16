@@ -84,5 +84,27 @@ class ClassifyDrgRoutesTests(unittest.TestCase):
         )
 
 
+class ClassifyVpnTunnelsTests(unittest.TestCase):
+    def setUp(self):
+        self.m = load_monitor()
+
+    def test_all_up_is_silent(self):
+        tunnels = [
+            {"ipsec": "oci-s2s", "tunnel": "tunnel-1", "status": "UP"},
+            {"ipsec": "oci-s2s", "tunnel": "tunnel-2", "status": "UP"},
+        ]
+        self.assertEqual(self.m.classify_vpn_tunnels(tunnels), [])
+
+    def test_down_tunnel_alerts(self):
+        tunnels = [
+            {"ipsec": "oci-s2s", "tunnel": "tunnel-1", "status": "UP"},
+            {"ipsec": "oci-s2s", "tunnel": "tunnel-2", "status": "DOWN"},
+        ]
+        alerts = self.m.classify_vpn_tunnels(tunnels)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("tunnel-2", alerts[0])
+        self.assertIn("DOWN", alerts[0])
+
+
 if __name__ == "__main__":
     unittest.main()

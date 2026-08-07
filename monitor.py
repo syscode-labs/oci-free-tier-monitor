@@ -513,6 +513,14 @@ def classify_drg_routes(
     return alerts
 
 
+# Reserved IPs owned by an external controller (e.g. oci-pivot-controller)
+# carry this freeform tag. They cycle through AVAILABLE for a few seconds
+# during the controller's own detach/reattach on node failover — the tag
+# check (stable across that window) is what keeps this scan from deleting a
+# live Service VIP mid-failover, which a lifecycle_state check alone can't.
+EXTERNALLY_MANAGED_TAG = "pivot.oci.io/managed"
+
+
 def orphaned_public_ips(config: dict) -> list[dict]:
     client = oci.core.VirtualNetworkClient(config)
     ips = oci.pagination.list_call_get_all_results(
@@ -524,6 +532,7 @@ def orphaned_public_ips(config: dict) -> list[dict]:
         {"id": ip.id, "ip": ip.ip_address, "name": ip.display_name}
         for ip in ips
         if ip.lifecycle_state == "AVAILABLE"
+        and not (ip.freeform_tags or {}).get(EXTERNALLY_MANAGED_TAG)
     ]
 
 

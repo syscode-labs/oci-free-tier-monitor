@@ -125,6 +125,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
     def test_compute_instances_include_flex_shape_resources(self):
         shape_config = types.SimpleNamespace(ocpus=1.0, memory_in_gbs=6.0)
         instance = types.SimpleNamespace(
+            id="instance-1",
             display_name="ampere-1",
             shape="VM.Standard.A1.Flex",
             shape_config=shape_config,
@@ -164,6 +165,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
         )
         shape_config = types.SimpleNamespace(ocpus=1.0, memory_in_gbs=6.0)
         instance = types.SimpleNamespace(
+            id="instance-1",
             display_name="oci-talos-cp-1",
             shape="VM.Standard.A1.Flex",
             shape_config=shape_config,
@@ -202,7 +204,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
         self.assertEqual(instances[0]["compartment_name"], "talos")
         self.assertEqual(instances[0]["compartment_id"], "compartment-b")
 
-    def test_compute_instances_skips_compartments_that_cannot_list_instances(self):
+    def test_compute_instances_fails_when_any_compartment_cannot_be_inventoried(self):
         compartment_a = types.SimpleNamespace(
             id="compartment-a",
             name="homelab",
@@ -215,6 +217,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
         )
         shape_config = types.SimpleNamespace(ocpus=1.0, memory_in_gbs=6.0)
         instance = types.SimpleNamespace(
+            id="instance-1",
             display_name="oci-talos-cp-1",
             shape="VM.Standard.A1.Flex",
             shape_config=shape_config,
@@ -247,10 +250,66 @@ class ScheduledAlertGatingTests(unittest.TestCase):
             ),
         )
 
-        instances = self.monitor.compute_instances({})
+        with self.assertRaisesRegex(RuntimeError, "instance inventory incomplete"):
+            self.monitor.compute_instances({})
 
-        self.assertEqual(len(instances), 1)
-        self.assertEqual(instances[0]["compartment_name"], "talos")
+    def test_compute_failure_does_not_report_instances_as_removed(self):
+        previous_snapshot = {
+            "instance-1": {
+                "name": "oci-talos-cp-1",
+                "shape": "VM.Standard.A1.Flex",
+                "state": "RUNNING",
+                "compartment": "syscode-homelab",
+            }
+        }
+        self.monitor._state["last_instance_snapshot"] = previous_snapshot
+
+        with self.patch_common_checks():
+            self.monitor.compute_instances.side_effect = RuntimeError(
+                "instance inventory incomplete (syscode-homelab: No route to host)"
+            )
+
+            self.monitor.check("/tmp/key.pem")
+
+            message = self.monitor.send_telegram.call_args.args[1]
+
+        self.assertIn("Compute check failed: instance inventory incomplete", message)
+        self.assertNotIn("Instance removed:", message)
+        self.assertEqual(
+            self.monitor._state["last_instance_snapshot"], previous_snapshot
+        )
+
+    def test_network_preflight_retries_once_before_failing(self):
+        with mock.patch.object(
+            self.monitor.socket,
+            "create_connection",
+            side_effect=[OSError("No route to host"), OSError("No route to host")],
+        ) as connect:
+            with self.assertRaisesRegex(RuntimeError, "after 2 attempts"):
+                self.monitor.check_oci_connectivity()
+
+        self.assertEqual(connect.call_count, 2)
+
+    def test_network_failure_skips_resource_checks_and_alerts_once(self):
+        with (
+            self.patch_common_checks(),
+            mock.patch.object(
+                self.monitor,
+                "check_oci_connectivity",
+                side_effect=RuntimeError("after 2 attempts: No route to host"),
+            ) as connectivity,
+        ):
+            self.monitor.check("/tmp/key.pem")
+            self.monitor.check("/tmp/key.pem")
+
+            self.assertEqual(connectivity.call_count, 2)
+            self.monitor.monthly_spend.assert_not_called()
+            self.monitor.compute_instances.assert_not_called()
+            self.assertEqual(self.monitor.send_telegram.call_count, 1)
+            message = self.monitor.send_telegram.call_args.args[1]
+
+        self.assertIn("after 2 attempts: No route to host", message)
+        self.assertIn("Resource checks skipped.", message)
 
     def test_scan_message_reports_compute_compartment(self):
         with mock.patch.multiple(

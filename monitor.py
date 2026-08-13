@@ -4,6 +4,7 @@ import io
 import re
 import json
 import time
+import socket
 import tempfile
 import datetime
 import threading
@@ -56,6 +57,7 @@ DEFAULTS = {
     "last_eom_invoice_month": None,
     "silenced_month": None,
     "last_instance_snapshot": None,
+    "network_failure_active": False,
     "auto_cleanup": True,
 }
 
@@ -221,6 +223,22 @@ def _short_err(e: Exception) -> str:
     if hasattr(e, "status") and hasattr(e, "code"):  # OCI ServiceError
         return f"{e.status} {e.code}"
     return str(e)[:120]
+
+
+def check_oci_connectivity(attempts: int = 2) -> None:
+    host = f"iaas.{REGION}.oraclecloud.com"
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            with socket.create_connection((host, 443), timeout=5):
+                return
+        except OSError as e:
+            last_error = e
+            if attempt + 1 < attempts:
+                time.sleep(1)
+    raise RuntimeError(
+        f"OCI network check failed after {attempts} attempts: {_short_err(last_error)}"
+    )
 
 
 def build_oci_config(key_file_path: str) -> dict:
@@ -673,13 +691,15 @@ def object_storage_usage_gb(config: dict) -> float:
 def compute_instances(config: dict) -> list[dict]:
     client = oci.core.ComputeClient(config)
     result = []
+    failures = []
     for compartment in accessible_compartments(config):
         try:
             instances = oci.pagination.list_call_get_all_results(
                 client.list_instances,
                 compartment_id=compartment["id"],
             ).data
-        except Exception:
+        except Exception as e:
+            failures.append(f"{compartment['name']}: {_short_err(e)}")
             continue
         for instance in instances:
             if instance.lifecycle_state in ("TERMINATED", "TERMINATING"):
@@ -697,6 +717,10 @@ def compute_instances(config: dict) -> list[dict]:
                     "compartment_name": compartment["name"],
                 }
             )
+    if failures:
+        raise RuntimeError(
+            "instance inventory incomplete (" + "; ".join(failures) + ")"
+        )
     return result
 
 
@@ -1156,6 +1180,16 @@ def check(key_file_path: str) -> None:
         return
 
     config = build_oci_config(key_file_path)
+    try:
+        check_oci_connectivity()
+    except Exception as e:
+        if not sget("network_failure_active"):
+            sset("network_failure_active", True, config)
+            name = _account_label or "OCI"
+            notify(f"🚨 *{name} alert*\n⚠️ {e}\nResource checks skipped.")
+        return
+    if sget("network_failure_active"):
+        sset("network_failure_active", False, config)
     threshold = sget("cost_threshold")
     max_lb = sget("max_lb_count")
     max_free_ips = sget("max_free_public_ips")

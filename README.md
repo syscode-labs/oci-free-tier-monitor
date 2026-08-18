@@ -169,32 +169,4 @@ Commit both `requirements.in` and the updated `requirements.txt`.
 
 ### Dev workflow
 
-```mermaid
-flowchart TD
-    A([clone / pull]) --> B[mise install]
-    B --> C[mise run hooks:install]
-    C --> D{write code}
-    D --> E[mise run compile\nif deps changed]
-    E --> F[mise run lint]
-    F --> G[git commit\npre-commit runs automatically]
-    G -->|bad message or lint fail| D
-    G -->|ok| H[git push]
-    H --> I{CI: lint job}
-    I -->|fail| J([fix & push again])
-    I -->|pass| K{CI: build job\namd64 + arm64}
-    K --> L([GHCR\nYYYY.MM.DD + latest])
-```
-
-### Conventional commits
-
-Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/). The pre-commit hook enforces this locally; CI enforces it on every push.
-
-Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
-
-Examples:
-
-```
-feat: add object storage usage scan
-fix: resolve f-string backslash syntax error
-chore: repin requirements
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev workflow diagram and commit message conventions.

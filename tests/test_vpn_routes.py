@@ -21,6 +21,13 @@ def load_monitor():
     sys.modules["requests"] = types.SimpleNamespace()
     sys.modules["pytz"] = types.SimpleNamespace()
     sys.modules["oci"] = types.SimpleNamespace()
+    core = types.SimpleNamespace(GaugeMetricFamily=object())
+    sys.modules["prometheus_client"] = types.SimpleNamespace(
+        start_http_server=object(),
+        REGISTRY=types.SimpleNamespace(register=lambda *_a, **_k: None),
+        core=core,
+    )
+    sys.modules["prometheus_client.core"] = core
     sys.modules.pop("monitor", None)
     return importlib.import_module("monitor")
 

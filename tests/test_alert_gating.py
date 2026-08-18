@@ -21,6 +21,13 @@ def load_monitor():
     sys.modules["requests"] = types.SimpleNamespace()
     sys.modules["pytz"] = types.SimpleNamespace()
     sys.modules["oci"] = types.SimpleNamespace()
+    core = types.SimpleNamespace(GaugeMetricFamily=mock.Mock())
+    sys.modules["prometheus_client"] = types.SimpleNamespace(
+        start_http_server=mock.Mock(),
+        REGISTRY=types.SimpleNamespace(register=mock.Mock()),
+        core=core,
+    )
+    sys.modules["prometheus_client.core"] = core
     sys.modules.pop("monitor", None)
     return importlib.import_module("monitor")
 
@@ -47,6 +54,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
             run_cleanup=mock.Mock(),
             _save_report_to_bucket=mock.Mock(),
             save_state=mock.Mock(),
+            save_metrics=mock.Mock(),
             send_telegram=mock.Mock(),
             _in_quiet_hours=mock.Mock(return_value=False),
         )

@@ -1,0 +1,19 @@
+services:
+  oci-monitor:
+    image: ghcr.io/syscode-labs/oci-free-tier-monitor:latest
+    container_name: oci-monitor
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    environment:
+      OCI_TENANCY_OCID: ${OCI_TENANCY_OCID:?}
+      OCI_USER_OCID: ${OCI_USER_OCID:?}
+      OCI_FINGERPRINT: ${OCI_FINGERPRINT:?}
+      OCI_REGION: ${OCI_REGION:-uk-london-1}
+      OCI_API_KEY: ${OCI_API_KEY:?}
+      OCI_COMPARTMENT_OCID: ${OCI_COMPARTMENT_OCID:?}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:?}
+      METRICS_PORT: ${METRICS_PORT:-}
+    ports:
+      - "${METRICS_PORT:-9100}:${METRICS_PORT:-9100}"

@@ -86,4 +86,10 @@
 
   <Config Name="Slack Webhook URL" Target="SLACK_WEBHOOK_URL" Default="" Mode=""
     Description="Slack incoming webhook URL for alert notifications (optional). Commands remain Telegram-only." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+
+  <Config Name="Metrics Port" Target="METRICS_PORT" Default="" Mode=""
+    Description="Set to a port number (e.g. 9100) to expose a Prometheus /metrics endpoint. Leave blank to disable — off by default." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Metrics" Target="9100" Default="9100" Mode="tcp"
+    Description="Host port for the Prometheus /metrics endpoint. Only listens if Metrics Port variable above is set to the same value." Type="Port" Display="advanced" Required="false" Mask="false">9100</Config>
 </Container>

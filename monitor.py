@@ -11,6 +11,8 @@ import threading
 import requests
 import pytz
 import oci
+from prometheus_client import start_http_server, REGISTRY
+from prometheus_client.core import GaugeMetricFamily
 
 TENANCY_OCID = os.environ["OCI_TENANCY_OCID"]
 USER_OCID = os.environ["OCI_USER_OCID"]
@@ -26,13 +28,16 @@ INTERVAL_HOURS = float(os.environ.get("CHECK_INTERVAL_HOURS", "6"))
 OCI_STATE_BUCKET = os.environ.get("OCI_STATE_BUCKET", "")
 OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
 VAT_RATE = float(os.environ.get("VAT_RATE", "0.20"))
+METRICS_PORT = os.environ.get("METRICS_PORT", "")
 
 STATE_FILE = "/data/state.json"
 BUCKET_STATE_KEY = "oci-monitor/state.json"
 BUCKET_REPORTS_KEY = "oci-monitor/reports/{ts}.json"
+METRICS_FILE = "/data/metrics.json"
 
 _lock = threading.Lock()
 _state: dict = {}
+_last_metrics: dict = {}
 
 _tenancy_slug = ""  # used in console URLs
 _account_label = ""  # display name in messages (compartment name or OCI_ACCOUNT_LABEL)
@@ -211,9 +216,143 @@ def is_silenced() -> bool:
     return month == datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
 
 
+QUIET_HOURS_END = 9  # local hour (Europe/London) checks resume
+
+
 def _in_quiet_hours() -> bool:
     tz = pytz.timezone("Europe/London")
-    return datetime.datetime.now(tz).hour < 9
+    return datetime.datetime.now(tz).hour < QUIET_HOURS_END
+
+
+# ── metrics (Prometheus, opt-in via METRICS_PORT) ──────────────────────────────
+
+
+def load_metrics() -> None:
+    global _last_metrics
+    try:
+        with open(METRICS_FILE) as f:
+            _last_metrics = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        _last_metrics = {}
+
+
+def save_metrics() -> None:
+    os.makedirs(os.path.dirname(METRICS_FILE), exist_ok=True)
+    with open(METRICS_FILE, "w") as f:
+        json.dump(_last_metrics, f)
+
+
+def update_metrics(patch: dict) -> None:
+    with _lock:
+        _last_metrics.update(patch)
+    save_metrics()
+
+
+class OCIMetricsCollector:
+    def collect(self):
+        with _lock:
+            m = dict(_last_metrics)
+
+        def gauge(key, name, doc):
+            return GaugeMetricFamily(name, doc, value=m.get(key, 0))
+
+        yield gauge(
+            "spend_gbp_inc_vat",
+            "oci_monitor_spend_gbp_inc_vat",
+            "Monthly spend inc. VAT (GBP)",
+        )
+        yield gauge(
+            "cost_threshold_gbp",
+            "oci_monitor_cost_threshold_gbp",
+            "Configured monthly cost alert threshold (GBP)",
+        )
+        yield gauge(
+            "lb_count", "oci_monitor_load_balancer_count", "Active load balancer count"
+        )
+        yield gauge(
+            "lb_empty",
+            "oci_monitor_load_balancers_empty",
+            "Load balancers with no backends/listeners",
+        )
+        yield gauge(
+            "orphaned_public_ips",
+            "oci_monitor_orphaned_public_ips",
+            "Unassigned reserved public IPs",
+        )
+        yield gauge(
+            "orphaned_volumes",
+            "oci_monitor_orphaned_volumes",
+            "Unattached boot/block volumes",
+        )
+        yield gauge(
+            "orphaned_volume_bytes",
+            "oci_monitor_orphaned_volume_bytes",
+            "Unattached volume size (bytes)",
+        )
+        yield gauge(
+            "volume_backups", "oci_monitor_volume_backups", "Volume backup count"
+        )
+        yield gauge(
+            "volume_backup_bytes",
+            "oci_monitor_volume_backup_bytes",
+            "Volume backup size (bytes)",
+        )
+        yield gauge(
+            "unused_images",
+            "oci_monitor_unused_custom_images",
+            "Custom images not in use by any instance",
+        )
+        yield gauge(
+            "unused_image_bytes",
+            "oci_monitor_unused_custom_image_bytes",
+            "Unused custom image size (bytes)",
+        )
+        yield gauge(
+            "object_storage_bytes",
+            "oci_monitor_object_storage_bytes",
+            "Object Storage usage (bytes)",
+        )
+        yield gauge(
+            "drg_count", "oci_monitor_drg_count", "Dynamic Routing Gateway count"
+        )
+        yield gauge(
+            "ipsec_count",
+            "oci_monitor_ipsec_connection_count",
+            "IPSec connection count",
+        )
+        yield gauge(
+            "network_failure",
+            "oci_monitor_network_failure",
+            "1 if the last OCI connectivity check failed",
+        )
+
+        last_scan_ts = m.get("last_scan_ts", 0)
+        yield GaugeMetricFamily(
+            "oci_monitor_last_scan_timestamp_seconds",
+            "Unix timestamp of the last completed scan cycle",
+            value=last_scan_ts,
+        )
+        # Threshold covers a normal check interval plus the daily quiet-hours
+        # window (checks skip entirely before QUIET_HOURS_END local time), so
+        # a healthy monitor doesn't read stale every night.
+        stale_after = 2 * INTERVAL_HOURS * 3600 + QUIET_HOURS_END * 3600
+        stale = (
+            1 if (not last_scan_ts or time.time() - last_scan_ts > stale_after) else 0
+        )
+        yield GaugeMetricFamily(
+            "oci_monitor_scan_stale",
+            "1 if no scan has completed within 2x the check interval plus the quiet-hours window",
+            value=stale,
+        )
+
+        instances = GaugeMetricFamily(
+            "oci_monitor_compute_instance_state",
+            "1 per known compute instance, labeled by name/shape/state",
+            labels=["name", "shape", "state"],
+        )
+        for i in m.get("instances", []):
+            instances.add_metric([i["name"], i["shape"], i["state"]], 1)
+        yield instances
 
 
 # ── OCI helpers ───────────────────────────────────────────────────────────────
@@ -1187,10 +1326,13 @@ def check(key_file_path: str) -> None:
             sset("network_failure_active", True, config)
             name = _account_label or "OCI"
             notify(f"🚨 *{name} alert*\n⚠️ {e}\nResource checks skipped.")
+        update_metrics({"network_failure": 1})
         return
     if sget("network_failure_active"):
         sset("network_failure_active", False, config)
+    update_metrics({"network_failure": 0})
     threshold = sget("cost_threshold")
+    update_metrics({"cost_threshold_gbp": threshold})
     max_lb = sget("max_lb_count")
     max_free_ips = sget("max_free_public_ips")
     auto = sget("auto_cleanup")
@@ -1214,6 +1356,7 @@ def check(key_file_path: str) -> None:
         ):
             sset("last_spend", round(spend_inc, 4), config)
             sset("last_spend_currency", currency, config)
+        update_metrics({"spend_gbp_inc_vat": spend_inc})
     except Exception as e:
         threshold_alerts.append(f"⚠️ Cost check failed: {e}")
 
@@ -1237,6 +1380,14 @@ def check(key_file_path: str) -> None:
             if diff:
                 change_alerts.extend(diff)
                 sset("last_instance_snapshot", snapshot, config)
+        update_metrics(
+            {
+                "instances": [
+                    {"name": i["name"], "shape": i["shape"], "state": i["state"]}
+                    for i in instances
+                ]
+            }
+        )
     except Exception as e:
         threshold_alerts.append(f"⚠️ Compute check failed: {e}")
 
@@ -1256,6 +1407,7 @@ def check(key_file_path: str) -> None:
                 "⚖️ LBs above 10 Mbps free tier: "
                 + ", ".join(f"{lb['name']} ({lb['max_mbps']} Mbps)" for lb in paid_bw)
             )
+        update_metrics({"lb_count": count, "lb_empty": len(empty)})
     except Exception as e:
         threshold_alerts.append(f"⚠️ LB check failed: {e}")
 
@@ -1264,6 +1416,7 @@ def check(key_file_path: str) -> None:
         ips = orphaned_public_ips(config)
         if len(ips) > max_free_ips:
             threshold_alerts.append(f"🌐 Unassigned reserved IPs: {len(ips)}")
+        update_metrics({"orphaned_public_ips": len(ips)})
     except Exception as e:
         threshold_alerts.append(f"⚠️ Public IP check failed: {e}")
 
@@ -1273,27 +1426,39 @@ def check(key_file_path: str) -> None:
         orphan_gb = sum(v["size_gb"] for v in boot_vols + block_vols)
         if orphan_gb > 0:
             change_alerts.append(f"💾 Orphaned volumes: {orphan_gb} GB unattached")
+        update_metrics(
+            {
+                "orphaned_volumes": len(boot_vols) + len(block_vols),
+                "orphaned_volume_bytes": orphan_gb * 1e9,
+            }
+        )
     except Exception as e:
         threshold_alerts.append(f"⚠️ Volume check failed: {e}")
 
     try:
         backups = volume_backups(config)
+        backup_gb = sum(b["size_gb"] for b in backups)
         if backups:
-            backup_gb = sum(b["size_gb"] for b in backups)
             change_alerts.append(
                 f"🗂️ Volume backups: {len(backups)} ({backup_gb:.0f} GB)"
             )
+        update_metrics(
+            {"volume_backups": len(backups), "volume_backup_bytes": backup_gb * 1e9}
+        )
     except Exception as e:
         threshold_alerts.append(f"⚠️ Backup check failed: {e}")
 
     try:
         imgs = custom_images(config)
         unused_imgs = [i for i in imgs if not i["in_use"]]
+        unused_gb = sum(i["size_gb"] for i in unused_imgs)
         if unused_imgs:
-            unused_gb = sum(i["size_gb"] for i in unused_imgs)
             change_alerts.append(
                 f"🖼️ Unused custom images: {len(unused_imgs)} ({unused_gb:.0f} GB)"
             )
+        update_metrics(
+            {"unused_images": len(unused_imgs), "unused_image_bytes": unused_gb * 1e9}
+        )
     except Exception as e:
         threshold_alerts.append(f"⚠️ Image check failed: {e}")
 
@@ -1304,6 +1469,7 @@ def check(key_file_path: str) -> None:
             threshold_alerts.append(
                 f"🗄️ Object Storage: {usage_gb:.1f} GB (threshold {max_os:.0f} GB)"
             )
+        update_metrics({"object_storage_bytes": usage_gb * 1e9})
     except Exception as e:
         threshold_alerts.append(f"⚠️ Object Storage check failed: {e}")
 
@@ -1323,6 +1489,7 @@ def check(key_file_path: str) -> None:
                 f"🔐 VPN present: {len(drg_list)} DRG, {len(ipsec_list)} IPSec "
                 "(Always Free; outbound transfer advisory, not a hard cap)"
             )
+        update_metrics({"drg_count": len(drg_list), "ipsec_count": len(ipsec_list)})
     except Exception as e:
         threshold_alerts.append(f"⚠️ VPN check failed: {e}")
 
@@ -1389,6 +1556,8 @@ def check(key_file_path: str) -> None:
                 sset("last_eom_invoice_month", current_month, config)
             except Exception as e:
                 notify(f"⚠️ EOM invoice preview failed: {e}")
+
+    update_metrics({"last_scan_ts": time.time()})
 
 
 # ── command handler ───────────────────────────────────────────────────────────
@@ -1554,6 +1723,11 @@ def main() -> None:
             pass
 
         load_state(config)
+        load_metrics()
+
+        if METRICS_PORT:
+            REGISTRY.register(OCIMetricsCollector())
+            start_http_server(int(METRICS_PORT))
 
         if BOT_TOKEN and CHAT_ID:
             threading.Thread(

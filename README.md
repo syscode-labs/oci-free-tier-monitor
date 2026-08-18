@@ -26,6 +26,10 @@ Active OCI cost and resource monitor with Telegram alerts and auto-cleanup. Runs
 
 ## Quick start
 
+Three ways to run it — pick one.
+
+### Docker run
+
 ```bash
 docker run -d \
   --name oci-monitor \
@@ -41,6 +45,35 @@ docker run -d \
   -e TELEGRAM_CHAT_ID=<chat_id> \
   ghcr.io/syscode-labs/oci-free-tier-monitor:latest
 ```
+
+### Docker Compose
+
+Uses [`docker-compose.yml`](docker-compose.yml) at the repo root, reading credentials from your shell environment:
+
+```bash
+export OCI_TENANCY_OCID=ocid1.tenancy.oc1..
+export OCI_USER_OCID=ocid1.user.oc1..
+export OCI_FINGERPRINT=xx:xx:xx:...
+export OCI_REGION=uk-london-1
+export OCI_API_KEY="$(cat ~/.oci/api_key.pem)"
+export OCI_COMPARTMENT_OCID=ocid1.compartment.oc1..
+export TELEGRAM_BOT_TOKEN=<token>
+export TELEGRAM_CHAT_ID=<chat_id>
+
+docker compose up -d
+```
+
+State is stored in `./data` next to the compose file. Set `METRICS_PORT` (see [Prometheus metrics](#prometheus-metrics)) before `up` to enable the exporter — the port mapping in `docker-compose.yml` is a no-op otherwise.
+
+### Unraid
+
+Add the template from [`unraid/oci-monitor.xml`](unraid/oci-monitor.xml) via Community Applications' "Template URL" field, or Docker → Add Container → paste:
+
+```text
+https://raw.githubusercontent.com/syscode-labs/oci-free-tier-monitor/main/unraid/oci-monitor.xml
+```
+
+Fill in the required fields (OCI credentials, Telegram token/chat ID); everything else has a sane default. `Metrics Port` is blank/off by default — set it to enable the exporter.
 
 ## Environment variables
 
@@ -67,6 +100,7 @@ docker run -d \
 | `CHECK_INTERVAL_HOURS` | | `6` | How often to run checks |
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |
 | `OCI_ACCOUNT_LABEL` | | compartment name | Display name shown in alerts and status messages (e.g. `oci@example.com-123456`) |
+| `METRICS_PORT` | | — | Set to a port (e.g. `9100`) to expose a Prometheus `/metrics` endpoint. Off by default. |
 
 All thresholds can also be changed at runtime via Telegram commands and are persisted to the state bucket.
 
@@ -120,6 +154,29 @@ When `OCI_STATE_BUCKET` is set, the monitor stores:
 | `oci-monitor/reports/<timestamp>.json` | Cleanup report per cycle that deleted something |
 
 If the bucket is unreachable, the container falls back to `/data/state.json` (the bind-mounted volume). Both are always written on every preference change.
+
+## Prometheus metrics
+
+Set `METRICS_PORT` (e.g. `9100`) to expose `/metrics` for scraping — off by default, no extra container or image needed:
+
+```bash
+docker run -d \
+  ... \
+  -e METRICS_PORT=9100 \
+  -p 9100:9100 \
+  ghcr.io/syscode-labs/oci-free-tier-monitor:latest
+```
+
+Example Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: oci-monitor
+    static_configs:
+      - targets: ["oci-monitor:9100"]
+```
+
+Metrics reflect the last completed check cycle (persisted to `/data/metrics.json`, so they survive restarts). `oci_monitor_scan_stale` is `1` if no scan has completed within 2× `CHECK_INTERVAL_HOURS` plus the daily quiet-hours window (checks pause before 09:00 Europe/London) — use it to alert on a dead or silenced monitor without nightly false positives. `oci_monitor_compute_instance_state{name,shape,state}` is the only labeled metric; everything else is a single unlabeled gauge to keep cardinality low.
 
 ## Auto-cleanup behaviour
 

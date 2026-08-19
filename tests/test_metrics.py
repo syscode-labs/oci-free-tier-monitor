@@ -193,14 +193,12 @@ class CheckMetricsIntegrationTests(unittest.TestCase):
             "last_scan_ts": 111.0,
         }
         with (
-            mock.patch.object(
-                self.monitor,
-                "check_oci_connectivity",
+            mock.patch(
+                "monitor.check_oci_connectivity",
                 side_effect=RuntimeError("after 2 attempts: No route to host"),
             ),
-            mock.patch.object(self.monitor, "notify"),
-            mock.patch.object(self.monitor, "_in_quiet_hours", return_value=False),
-            mock.patch.object(self.monitor, "save_state"),
+            mock.patch("monitor.notify"),
+            mock.patch("monitor._in_quiet_hours", return_value=False),
         ):
             self.monitor.check("/tmp/key.pem")
 

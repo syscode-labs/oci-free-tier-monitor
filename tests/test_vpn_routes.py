@@ -51,6 +51,16 @@ class ClassifyDrgRoutesTests(unittest.TestCase):
         ]
         self.assertEqual(self.m.classify_drg_routes(rules, {DRG}, self.approved), [])
 
+    def test_approved_specific_host_route_is_silent(self):
+        rules = [
+            {
+                "destination": "10.10.210.1/32",
+                "network_entity_id": DRG,
+                "route_table": "vpn",
+            }
+        ]
+        self.assertEqual(self.m.classify_drg_routes(rules, {DRG}, self.approved), [])
+
     def test_default_route_to_drg_alerts(self):
         rules = [
             {"destination": "0.0.0.0/0", "network_entity_id": DRG, "route_table": "vpn"}

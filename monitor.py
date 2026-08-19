@@ -620,7 +620,7 @@ def drg_route_alerts(config: dict, drg_ids: Set[str]) -> List[str]:
     return classify_drg_routes(rules, drg_ids, VPN_APPROVED_DRG_PREFIXES)
 
 
-def classify_vpn_tunnels(tunnels: list[dict]) -> List[str]:
+def classify_vpn_tunnels(tunnels: List[dict]) -> List[str]:
     # Pure: alert on any Site-to-Site VPN tunnel not UP. `tunnels` is a list of
     # {"ipsec": str, "tunnel": str, "status": str}.
     return [
@@ -630,7 +630,7 @@ def classify_vpn_tunnels(tunnels: list[dict]) -> List[str]:
     ]
 
 
-def vpn_tunnel_alerts(config: dict, ipsec_list: list[dict]) -> List[str]:
+def vpn_tunnel_alerts(config: dict, ipsec_list: List[dict]) -> List[str]:
     # Tunnel-liveness watch (complements the presence/drift checks). Reading
     # tunnel status needs read on ipsec tunnels; degrade to a soft note if IAM
     # denies rather than crash the whole VPN check.
@@ -653,7 +653,7 @@ def vpn_tunnel_alerts(config: dict, ipsec_list: list[dict]) -> List[str]:
 
 
 def classify_drg_routes(
-    rules: list[dict], drg_ids: Set[str], approved_prefixes: Tuple[str, ...]
+    rules: List[dict], drg_ids: Set[str], approved_prefixes: Tuple[str, ...]
 ) -> List[str]:
     """Pure: flag route rules sending an over-broad / unapproved prefix to a DRG.
 
@@ -869,7 +869,7 @@ def compute_instances(config: dict) -> List[dict]:
     return result
 
 
-def compute_free_tier_breaches(instances: list[dict]) -> List[str]:
+def compute_free_tier_breaches(instances: List[dict]) -> List[str]:
     ampere = [i for i in instances if i["shape"] == "VM.Standard.A1.Flex"]
     micro = [i for i in instances if i["shape"] == "VM.Standard.E2.1.Micro"]
     ampere_ocpus = sum(i["ocpus"] for i in ampere)
@@ -893,7 +893,7 @@ def compute_free_tier_breaches(instances: list[dict]) -> List[str]:
 # ── cleanup ───────────────────────────────────────────────────────────────────
 
 
-def _cleanup_ips(config: dict, ips: list[dict]) -> tuple:
+def _cleanup_ips(config: dict, ips: List[dict]) -> tuple:
     client = oci.core.VirtualNetworkClient(config)
     deleted, errors = [], []
     for ip in ips:
@@ -905,7 +905,7 @@ def _cleanup_ips(config: dict, ips: list[dict]) -> tuple:
     return deleted, errors
 
 
-def _cleanup_boot_volumes(config: dict, vols: list[dict]) -> tuple:
+def _cleanup_boot_volumes(config: dict, vols: List[dict]) -> tuple:
     client = oci.core.BlockstorageClient(config)
     deleted, errors = [], []
     for v in vols:
@@ -917,7 +917,7 @@ def _cleanup_boot_volumes(config: dict, vols: list[dict]) -> tuple:
     return deleted, errors
 
 
-def _cleanup_block_volumes(config: dict, vols: list[dict]) -> tuple:
+def _cleanup_block_volumes(config: dict, vols: List[dict]) -> tuple:
     client = oci.core.BlockstorageClient(config)
     deleted, errors = [], []
     for v in vols:
@@ -929,7 +929,7 @@ def _cleanup_block_volumes(config: dict, vols: list[dict]) -> tuple:
     return deleted, errors
 
 
-def _cleanup_images(config: dict, images: list[dict]) -> tuple:
+def _cleanup_images(config: dict, images: List[dict]) -> tuple:
     client = oci.core.ComputeClient(config)
     deleted, errors = [], []
     for img in images:

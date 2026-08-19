@@ -11,6 +11,7 @@ import threading
 import requests
 import pytz
 import oci
+from typing import Dict, List, Optional, Set, Tuple
 from prometheus_client import start_http_server, REGISTRY
 from prometheus_client.core import GaugeMetricFamily
 
@@ -41,7 +42,7 @@ _last_metrics: dict = {}
 
 _tenancy_slug = ""  # used in console URLs
 _account_label = ""  # display name in messages (compartment name or OCI_ACCOUNT_LABEL)
-_availability_domains: list[str] = []
+_availability_domains: List[str] = []
 _os_namespace = ""  # OCI Object Storage tenancy namespace
 
 DEFAULTS = {
@@ -80,7 +81,7 @@ HELP_TEXT = """\
 /help [command] — show this message, or detail for a command\
 """
 
-HELP_DETAIL: dict[str, str] = {
+HELP_DETAIL: Dict[str, str] = {
     "autocleanup": """\
 *Auto-cleanup*
 Automatically deletes orphaned resources that accrue cost with no benefit:
@@ -139,7 +140,7 @@ Usage: `/lbmax 1`\
 # ── state (local + OCI bucket) ───────────────────────────────────────────────
 
 
-def _state_from_bucket(config: dict) -> dict | None:
+def _state_from_bucket(config: dict) -> Optional[dict]:
     if not OCI_STATE_BUCKET or not _os_namespace:
         return None
     try:
@@ -176,7 +177,7 @@ def _save_report_to_bucket(config: dict, report: dict) -> None:
         pass
 
 
-def load_state(config: dict | None = None) -> None:
+def load_state(config: Optional[dict] = None) -> None:
     global _state
     loaded = None
     if config:
@@ -192,7 +193,7 @@ def load_state(config: dict | None = None) -> None:
         _state.setdefault(k, v)
 
 
-def save_state(config: dict | None = None) -> None:
+def save_state(config: Optional[dict] = None) -> None:
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w") as f:
         json.dump(_state, f)
@@ -205,7 +206,7 @@ def sget(key):
         return _state[key]
 
 
-def sset(key, value, config: dict | None = None) -> None:
+def sset(key, value, config: Optional[dict] = None) -> None:
     with _lock:
         _state[key] = value
     save_state(config)
@@ -390,7 +391,7 @@ def build_oci_config(key_file_path: str) -> dict:
     }
 
 
-def fetch_tenancy_info(config: dict) -> tuple[str, str]:
+def fetch_tenancy_info(config: dict) -> tuple:
     client = oci.identity.IdentityClient(config)
     t = client.get_tenancy(TENANCY_OCID).data
     compartment = client.get_compartment(COMPARTMENT_OCID).data
@@ -398,7 +399,7 @@ def fetch_tenancy_info(config: dict) -> tuple[str, str]:
     return t.name, label
 
 
-def fetch_availability_domains(config: dict) -> list[str]:
+def fetch_availability_domains(config: dict) -> List[str]:
     client = oci.identity.IdentityClient(config)
     ads = client.list_availability_domains(compartment_id=TENANCY_OCID).data
     return [ad.name for ad in ads]
@@ -416,7 +417,7 @@ def _configured_compartment() -> dict:
     }
 
 
-def accessible_compartments(config: dict) -> list[dict]:
+def accessible_compartments(config: dict) -> List[dict]:
     if not hasattr(oci, "identity"):
         return [_configured_compartment()]
 
@@ -452,7 +453,7 @@ def accessible_compartments(config: dict) -> list[dict]:
     return result or [_configured_compartment()]
 
 
-def monthly_spend_breakdown(config: dict) -> tuple[list[tuple[str, float]], str]:
+def monthly_spend_breakdown(config: dict) -> tuple:
     client = oci.usage_api.UsageapiClient(config)
     today = datetime.datetime.now(datetime.timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -478,7 +479,7 @@ def monthly_spend_breakdown(config: dict) -> tuple[list[tuple[str, float]], str]
     return rows, currency
 
 
-def monthly_spend(config: dict) -> tuple[float, str]:
+def monthly_spend(config: dict) -> tuple:
     client = oci.usage_api.UsageapiClient(config)
     today = datetime.datetime.now(datetime.timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -498,7 +499,7 @@ def monthly_spend(config: dict) -> tuple[float, str]:
     return total, currency
 
 
-def load_balancers(config: dict) -> list[dict]:
+def load_balancers(config: dict) -> List[dict]:
     client = oci.load_balancer.LoadBalancerClient(config)
     lbs = oci.pagination.list_call_get_all_results(
         client.list_load_balancers,
@@ -544,10 +545,15 @@ def load_balancers(config: dict) -> list[dict]:
 
 # Prefixes the VPN path is allowed to route to a DRG. Anything broader — or
 # 0.0.0.0/0 — is an alert. Omni target /32 + the OCI VPN subnet/secondary CIDR.
-VPN_APPROVED_DRG_PREFIXES = ("100.72.134.50/32", "10.44.1.0/24", "10.44.0.0/16")
+VPN_APPROVED_DRG_PREFIXES = (
+    "100.72.134.50/32",
+    "10.44.1.0/24",
+    "10.44.0.0/16",
+    "10.10.210.1/32",
+)
 
 
-def drgs(config: dict) -> list[dict]:
+def drgs(config: dict) -> List[dict]:
     client = oci.core.VirtualNetworkClient(config)
     items = oci.pagination.list_call_get_all_results(
         client.list_drgs, compartment_id=COMPARTMENT_OCID
@@ -559,7 +565,7 @@ def drgs(config: dict) -> list[dict]:
     ]
 
 
-def ipsec_connections(config: dict) -> list[dict]:
+def ipsec_connections(config: dict) -> List[dict]:
     # Presence-only. Tunnel health needs extra IAM (inspect ipsec-connections /
     # read virtual-network-family); degrade to presence rather than require it.
     client = oci.core.VirtualNetworkClient(config)
@@ -573,7 +579,7 @@ def ipsec_connections(config: dict) -> list[dict]:
     ]
 
 
-def nat_gateways(config: dict) -> list[dict]:
+def nat_gateways(config: dict) -> List[dict]:
     client = oci.core.VirtualNetworkClient(config)
     items = oci.pagination.list_call_get_all_results(
         client.list_nat_gateways, compartment_id=COMPARTMENT_OCID
@@ -585,7 +591,7 @@ def nat_gateways(config: dict) -> list[dict]:
     ]
 
 
-def network_load_balancers(config: dict) -> list[dict]:
+def network_load_balancers(config: dict) -> List[dict]:
     client = oci.network_load_balancer.NetworkLoadBalancerClient(config)
     items = oci.pagination.list_call_get_all_results(
         client.list_network_load_balancers, compartment_id=COMPARTMENT_OCID
@@ -597,7 +603,7 @@ def network_load_balancers(config: dict) -> list[dict]:
     ]
 
 
-def drg_route_alerts(config: dict, drg_ids: set[str]) -> list[str]:
+def drg_route_alerts(config: dict, drg_ids: Set[str]) -> List[str]:
     client = oci.core.VirtualNetworkClient(config)
     rts = oci.pagination.list_call_get_all_results(
         client.list_route_tables, compartment_id=COMPARTMENT_OCID
@@ -614,7 +620,7 @@ def drg_route_alerts(config: dict, drg_ids: set[str]) -> list[str]:
     return classify_drg_routes(rules, drg_ids, VPN_APPROVED_DRG_PREFIXES)
 
 
-def classify_vpn_tunnels(tunnels: list[dict]) -> list[str]:
+def classify_vpn_tunnels(tunnels: list[dict]) -> List[str]:
     # Pure: alert on any Site-to-Site VPN tunnel not UP. `tunnels` is a list of
     # {"ipsec": str, "tunnel": str, "status": str}.
     return [
@@ -624,13 +630,13 @@ def classify_vpn_tunnels(tunnels: list[dict]) -> list[str]:
     ]
 
 
-def vpn_tunnel_alerts(config: dict, ipsec_list: list[dict]) -> list[str]:
+def vpn_tunnel_alerts(config: dict, ipsec_list: list[dict]) -> List[str]:
     # Tunnel-liveness watch (complements the presence/drift checks). Reading
     # tunnel status needs read on ipsec tunnels; degrade to a soft note if IAM
     # denies rather than crash the whole VPN check.
     client = oci.core.VirtualNetworkClient(config)
-    tunnels: list[dict] = []
-    notes: list[str] = []
+    tunnels: List[dict] = []
+    notes: List[str] = []
     for ipsc in ipsec_list:
         try:
             for t in client.list_ip_sec_connection_tunnels(ipsc["id"]).data:
@@ -647,8 +653,8 @@ def vpn_tunnel_alerts(config: dict, ipsec_list: list[dict]) -> list[str]:
 
 
 def classify_drg_routes(
-    rules: list[dict], drg_ids: set[str], approved_prefixes: tuple[str, ...]
-) -> list[str]:
+    rules: list[dict], drg_ids: Set[str], approved_prefixes: Tuple[str, ...]
+) -> List[str]:
     """Pure: flag route rules sending an over-broad / unapproved prefix to a DRG.
 
     A rule targets a DRG when its network_entity_id is a known DRG OCID or looks
@@ -678,7 +684,7 @@ def classify_drg_routes(
 EXTERNALLY_MANAGED_TAG = "pivot.oci.io/managed"
 
 
-def orphaned_public_ips(config: dict) -> list[dict]:
+def orphaned_public_ips(config: dict) -> List[dict]:
     client = oci.core.VirtualNetworkClient(config)
     ips = oci.pagination.list_call_get_all_results(
         client.list_public_ips,
@@ -693,7 +699,7 @@ def orphaned_public_ips(config: dict) -> list[dict]:
     ]
 
 
-def orphaned_boot_volumes(config: dict) -> list[dict]:
+def orphaned_boot_volumes(config: dict) -> List[dict]:
     if not _availability_domains:
         return []
     bv_client = oci.core.BlockstorageClient(config)
@@ -724,7 +730,7 @@ def orphaned_boot_volumes(config: dict) -> list[dict]:
     return result
 
 
-def orphaned_block_volumes(config: dict) -> list[dict]:
+def orphaned_block_volumes(config: dict) -> List[dict]:
     client = oci.core.BlockstorageClient(config)
     vols = oci.pagination.list_call_get_all_results(
         client.list_volumes,
@@ -737,7 +743,7 @@ def orphaned_block_volumes(config: dict) -> list[dict]:
     ]
 
 
-def volume_backups(config: dict) -> list[dict]:
+def volume_backups(config: dict) -> List[dict]:
     client = oci.core.BlockstorageClient(config)
     bv = oci.pagination.list_call_get_all_results(
         client.list_boot_volume_backups,
@@ -772,7 +778,7 @@ def volume_backups(config: dict) -> list[dict]:
     ]
 
 
-def custom_images(config: dict) -> list[dict]:
+def custom_images(config: dict) -> List[dict]:
     compute_client = oci.core.ComputeClient(config)
     images = oci.pagination.list_call_get_all_results(
         compute_client.list_images,
@@ -827,7 +833,7 @@ def object_storage_usage_gb(config: dict) -> float:
     return total_bytes / 1024**3
 
 
-def compute_instances(config: dict) -> list[dict]:
+def compute_instances(config: dict) -> List[dict]:
     client = oci.core.ComputeClient(config)
     result = []
     failures = []
@@ -863,7 +869,7 @@ def compute_instances(config: dict) -> list[dict]:
     return result
 
 
-def compute_free_tier_breaches(instances: list[dict]) -> list[str]:
+def compute_free_tier_breaches(instances: list[dict]) -> List[str]:
     ampere = [i for i in instances if i["shape"] == "VM.Standard.A1.Flex"]
     micro = [i for i in instances if i["shape"] == "VM.Standard.E2.1.Micro"]
     ampere_ocpus = sum(i["ocpus"] for i in ampere)
@@ -887,7 +893,7 @@ def compute_free_tier_breaches(instances: list[dict]) -> list[str]:
 # ── cleanup ───────────────────────────────────────────────────────────────────
 
 
-def _cleanup_ips(config: dict, ips: list[dict]) -> tuple[list, list]:
+def _cleanup_ips(config: dict, ips: list[dict]) -> tuple:
     client = oci.core.VirtualNetworkClient(config)
     deleted, errors = [], []
     for ip in ips:
@@ -899,7 +905,7 @@ def _cleanup_ips(config: dict, ips: list[dict]) -> tuple[list, list]:
     return deleted, errors
 
 
-def _cleanup_boot_volumes(config: dict, vols: list[dict]) -> tuple[list, list]:
+def _cleanup_boot_volumes(config: dict, vols: list[dict]) -> tuple:
     client = oci.core.BlockstorageClient(config)
     deleted, errors = [], []
     for v in vols:
@@ -911,7 +917,7 @@ def _cleanup_boot_volumes(config: dict, vols: list[dict]) -> tuple[list, list]:
     return deleted, errors
 
 
-def _cleanup_block_volumes(config: dict, vols: list[dict]) -> tuple[list, list]:
+def _cleanup_block_volumes(config: dict, vols: list[dict]) -> tuple:
     client = oci.core.BlockstorageClient(config)
     deleted, errors = [], []
     for v in vols:
@@ -923,7 +929,7 @@ def _cleanup_block_volumes(config: dict, vols: list[dict]) -> tuple[list, list]:
     return deleted, errors
 
 
-def _cleanup_images(config: dict, images: list[dict]) -> tuple[list, list]:
+def _cleanup_images(config: dict, images: list[dict]) -> tuple:
     client = oci.core.ComputeClient(config)
     deleted, errors = [], []
     for img in images:
@@ -1282,11 +1288,11 @@ def _cleanup_summary(report: dict) -> str:
 # ── scheduled check ───────────────────────────────────────────────────────────
 
 
-def _alert_signature(alerts: list[str]) -> str:
+def _alert_signature(alerts: List[str]) -> str:
     return json.dumps(alerts, sort_keys=True, separators=(",", ":"))
 
 
-def _instance_diff(old: dict, new: dict) -> list[str]:
+def _instance_diff(old: dict, new: dict) -> List[str]:
     msgs = []
     for iid in set(new) - set(old):
         i = new[iid]

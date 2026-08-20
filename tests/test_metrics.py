@@ -199,6 +199,7 @@ class CheckMetricsIntegrationTests(unittest.TestCase):
             ),
             mock.patch("monitor.notify"),
             mock.patch("monitor._in_quiet_hours", return_value=False),
+            mock.patch("monitor.save_state"),
         ):
             self.monitor.check("/tmp/key.pem")
 

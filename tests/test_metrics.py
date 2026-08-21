@@ -192,17 +192,17 @@ class CheckMetricsIntegrationTests(unittest.TestCase):
             "network_failure": 0,
             "last_scan_ts": 111.0,
         }
-        with (
-            mock.patch.object(
-                self.monitor,
-                "check_oci_connectivity",
-                side_effect=RuntimeError("after 2 attempts: No route to host"),
-            ),
-            mock.patch.object(self.monitor, "notify"),
-            mock.patch.object(self.monitor, "_in_quiet_hours", return_value=False),
-            mock.patch.object(self.monitor, "save_state"),
-        ):
-            self.monitor.check("/tmp/key.pem")
+        with mock.patch.object(
+            self.monitor,
+            "check_oci_connectivity",
+            side_effect=RuntimeError("after 2 attempts: No route to host"),
+        ) as _:
+            with mock.patch.object(self.monitor, "notify") as _:
+                with mock.patch.object(
+                    self.monitor, "_in_quiet_hours", return_value=False
+                ) as _:
+                    with mock.patch.object(self.monitor, "save_state") as _:
+                        self.monitor.check("/tmp/key.pem")
 
         m = self.monitor._last_metrics
         self.assertEqual(m["network_failure"], 1)

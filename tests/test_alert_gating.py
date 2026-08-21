@@ -71,8 +71,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
 
             # Verify custom images were processed - the check method handles
             # unused custom images and adds appropriate alerts
-            self.assertTrue(hasattr(self.monitor, 'custom_images'))
-
+            self.assertTrue(hasattr(self.monitor, "custom_images"))
 
     def test_threshold_breach_alerts_only_once_when_amount_unchanged(self):
         # Test that threshold breach alert gating works
@@ -86,8 +85,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
 
             # Verify the monitor processes the spend check correctly
             # The check method handles alert gating for threshold breaches
-            self.assertTrue(hasattr(self.monitor, 'monthly_spend'))
-
+            self.assertTrue(hasattr(self.monitor, "monthly_spend"))
 
     def test_threshold_breach_re_alerts_when_amount_changes(self):
         """A new alert fires when spend crosses the next £1 boundary."""
@@ -137,8 +135,7 @@ class ScheduledAlertGatingTests(unittest.TestCase):
             # through the monitor's internal state after check()
             # The check method adds breaches to threshold_alerts list
             # We verify by checking that the monitor processed the instances
-            self.assertTrue(hasattr(self.monitor, '_state'))
-
+            self.assertTrue(hasattr(self.monitor, "_state"))
 
     def test_compute_instances_include_flex_shape_resources(self):
         shape_config = types.SimpleNamespace(ocpus=1.0, memory_in_gbs=6.0)

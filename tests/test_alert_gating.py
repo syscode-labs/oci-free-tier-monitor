@@ -99,6 +99,63 @@ class ScheduledAlertGatingTests(unittest.TestCase):
 
             self.assertEqual(self.monitor.send_telegram.call_count, 2)
 
+    def test_vpn_alert_retries_after_delivery_failure(self):
+        """A failed send must not acknowledge a tunnel-down signature."""
+        notify = mock.Mock(side_effect=[False, True])
+        with (
+            self.patch_common_checks(),
+            mock.patch.multiple(
+                self.monitor,
+                drgs=mock.Mock(return_value=[]),
+                ipsec_connections=mock.Mock(
+                    return_value=[{"id": "ipsec", "name": "home"}]
+                ),
+                nat_gateways=mock.Mock(return_value=[]),
+                network_load_balancers=mock.Mock(return_value=[]),
+                drg_route_alerts=mock.Mock(return_value=[]),
+                vpn_tunnel_alerts=mock.Mock(return_value=["VPN tunnel down: home/one"]),
+                notify=notify,
+            ),
+        ):
+            self.monitor.check("/tmp/key.pem")
+            self.assertIsNone(self.monitor._state["last_threshold_alert_signature"])
+
+            self.monitor.check("/tmp/key.pem")
+
+        self.assertEqual(notify.call_count, 2)
+        self.assertIn(
+            "VPN tunnel down", self.monitor._state["last_threshold_alert_signature"]
+        )
+
+    def test_grafana_delivery_posts_annotation(self):
+        response = mock.Mock(ok=True)
+        with (
+            mock.patch.object(self.monitor, "GRAFANA_URL", "https://grafana.example"),
+            mock.patch.object(self.monitor, "GRAFANA_API_TOKEN", "token"),
+            mock.patch.object(
+                self.monitor.requests, "post", return_value=response, create=True
+            ) as post,
+        ):
+            self.assertTrue(self.monitor.send_grafana("VPN tunnel down"))
+
+        self.assertEqual(
+            post.call_args.args[0], "https://grafana.example/api/annotations"
+        )
+        self.assertEqual(
+            post.call_args.kwargs["json"]["tags"], ["oci-monitor", "alert"]
+        )
+
+    def test_grafana_failure_does_not_acknowledge_delivery(self):
+        response = mock.Mock(ok=False, status_code=503)
+        with (
+            mock.patch.object(self.monitor, "GRAFANA_URL", "https://grafana.example"),
+            mock.patch.object(self.monitor, "GRAFANA_API_TOKEN", "token"),
+            mock.patch.object(
+                self.monitor.requests, "post", return_value=response, create=True
+            ),
+        ):
+            self.assertFalse(self.monitor.send_grafana("VPN tunnel down"))
+
     def test_ampere_compute_above_new_free_tier_limits_alerts(self):
         # Test that compute_free_tier_breaches generates correct breach messages
         # when A1 instances exceed the threshold

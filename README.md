@@ -5,7 +5,7 @@
 ![GHCR](https://img.shields.io/badge/container-ghcr.io-blue)
 ![OCI](https://img.shields.io/badge/cloud-OCI-red)
 
-Active OCI cost and resource monitor with Telegram alerts and auto-cleanup. Runs as a container, checks on a configurable schedule, and reacts to bot commands.
+Active OCI cost and resource monitor with Telegram, webhook, and Grafana alerts plus auto-cleanup. Runs as a container, checks on a configurable schedule, and reacts to bot commands.
 
 ## Features
 
@@ -101,10 +101,14 @@ Fill in the required fields (OCI credentials, Telegram token/chat ID); everythin
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |
 | `OCI_ACCOUNT_LABEL` | | compartment name | Display name shown in alerts and status messages (e.g. `oci@example.com-123456`) |
 | `METRICS_PORT` | | — | Set to a port (e.g. `9100`) to expose a Prometheus `/metrics` endpoint. Off by default. |
+| `GRAFANA_URL` | | — | Grafana base URL. Set with `GRAFANA_API_TOKEN` to publish organization-wide alert annotations. |
+| `GRAFANA_API_TOKEN` | | — | Grafana service-account token with permission to create annotations. |
 
 All thresholds can also be changed at runtime via Telegram commands and are persisted to the state bucket.
 
 Scheduled checks always send threshold breaches and check failures. Non-threshold findings such as empty load balancers, orphaned volumes, backups, and unused custom images are sent when they first appear, change, or clear, which avoids repeating the same finding every interval.
+
+When Grafana is configured, each scheduled alert becomes an organization-wide annotation tagged `oci-monitor` and `alert`. Verify the integration by creating a temporary threshold breach, then check Grafana's Annotations view for the matching alert. A finding is marked delivered only after at least one configured destination accepts it; failed destinations are retried on the next scheduled check.
 
 On the last 2 days of each calendar month, a single invoice preview message is sent (regardless of threshold) showing the VAT-inclusive total and a breakdown by OCI service. It fires at most once per month.
 

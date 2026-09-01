@@ -25,6 +25,8 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+GRAFANA_URL = os.environ.get("GRAFANA_URL", "").rstrip("/")
+GRAFANA_API_TOKEN = os.environ.get("GRAFANA_API_TOKEN", "")
 INTERVAL_HOURS = float(os.environ.get("CHECK_INTERVAL_HOURS", "6"))
 OCI_STATE_BUCKET = os.environ.get("OCI_STATE_BUCKET", "")
 OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
@@ -967,18 +969,22 @@ def run_cleanup(config: dict, ips: list, boot_vols: list, block_vols: list) -> d
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
 
-def send_telegram(chat_id: str, message: str) -> None:
+def send_telegram(chat_id: str, message: str) -> bool:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    resp = requests.post(
-        url,
-        json={
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        },
-        timeout=10,
-    )
+    try:
+        resp = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[telegram] send failed: {type(e).__name__}", flush=True)
+        return False
     if not resp.json().get("ok"):
         if resp.status_code == 400 and "parse" in resp.text:
             print(f"[tg] markdown error at: {message[300:380]!r}", flush=True)
@@ -992,33 +998,74 @@ def send_telegram(chat_id: str, message: str) -> None:
                 timeout=10,
             )
         if not resp.json().get("ok"):
-            print(f"[tg] send failed chat={chat_id}: {resp.text[:200]}", flush=True)
+            print(f"[telegram] send failed status={resp.status_code}", flush=True)
+            return False
+    return True
 
 
 _TG_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
-def send_discord(message: str) -> None:
+def send_discord(message: str) -> bool:
     text = _TG_LINK.sub(r"\1 <\2>", message)[:2000]
-    resp = requests.post(DISCORD_WEBHOOK_URL, json={"content": text}, timeout=10)
+    try:
+        resp = requests.post(DISCORD_WEBHOOK_URL, json={"content": text}, timeout=10)
+    except Exception as e:
+        print(f"[discord] send failed: {type(e).__name__}", flush=True)
+        return False
     if not resp.ok:
-        print(f"[discord] send failed: {resp.text[:200]}", flush=True)
+        print(f"[discord] send failed status={resp.status_code}", flush=True)
+        return False
+    return True
 
 
-def send_slack(message: str) -> None:
+def send_slack(message: str) -> bool:
     text = _TG_LINK.sub(r"<\2|\1>", message)
-    resp = requests.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=10)
+    try:
+        resp = requests.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=10)
+    except Exception as e:
+        print(f"[slack] send failed: {type(e).__name__}", flush=True)
+        return False
     if not resp.ok:
-        print(f"[slack] send failed: {resp.text[:200]}", flush=True)
+        print(f"[slack] send failed status={resp.status_code}", flush=True)
+        return False
+    return True
 
 
-def notify(message: str) -> None:
+def send_grafana(message: str) -> bool:
+    """Publish an organization-wide Grafana annotation for an alert finding."""
+    try:
+        resp = requests.post(
+            f"{GRAFANA_URL}/api/annotations",
+            headers={"Authorization": f"Bearer {GRAFANA_API_TOKEN}"},
+            json={
+                "time": int(time.time() * 1000),
+                "tags": ["oci-monitor", "alert"],
+                "text": _TG_LINK.sub(r"\1 <\2>", message),
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[grafana] send failed: {type(e).__name__}", flush=True)
+        return False
+    if not resp.ok:
+        print(f"[grafana] send failed status={resp.status_code}", flush=True)
+        return False
+    return True
+
+
+def notify(message: str) -> bool:
+    """Return true only after at least one configured destination accepts it."""
+    delivered = []
     if BOT_TOKEN and CHAT_ID:
-        send_telegram(CHAT_ID, message)
+        delivered.append(send_telegram(CHAT_ID, message))
     if DISCORD_WEBHOOK_URL:
-        send_discord(message)
+        delivered.append(send_discord(message))
     if SLACK_WEBHOOK_URL:
-        send_slack(message)
+        delivered.append(send_slack(message))
+    if GRAFANA_URL and GRAFANA_API_TOKEN:
+        delivered.append(send_grafana(message))
+    return any(delivered)
 
 
 def billing_url() -> str:
@@ -1329,9 +1376,9 @@ def check(key_file_path: str) -> None:
         check_oci_connectivity()
     except Exception as e:
         if not sget("network_failure_active"):
-            sset("network_failure_active", True, config)
             name = _account_label or "OCI"
-            notify(f"🚨 *{name} alert*\n⚠️ {e}\nResource checks skipped.")
+            if notify(f"🚨 *{name} alert*\n⚠️ {e}\nResource checks skipped."):
+                sset("network_failure_active", True, config)
         update_metrics({"network_failure": 1})
         return
     if sget("network_failure_active"):
@@ -1503,9 +1550,6 @@ def check(key_file_path: str) -> None:
     change_signature = _alert_signature(change_alerts)
     previous_change_signature = sget("last_change_alert_signature")
     change_alerts_changed = previous_change_signature != change_signature
-    if change_alerts_changed:
-        sset("last_change_alert_signature", change_signature, config)
-
     # Gate threshold_alerts on state change OR last 2 days of month (EOM recap)
     # Spend is rounded to the nearest £1 in the signature so penny-level fluctuations
     # don't re-fire the same alert on every check cycle.
@@ -1519,9 +1563,6 @@ def check(key_file_path: str) -> None:
     previous_threshold_signature = sget("last_threshold_alert_signature")
     threshold_alerts_changed = previous_threshold_signature != threshold_signature
     near_eom = _is_near_end_of_month()
-    if threshold_alerts_changed:
-        sset("last_threshold_alert_signature", threshold_signature, config)
-
     alerts = (threshold_alerts if (threshold_alerts_changed or near_eom) else []) + (
         change_alerts if (not alert_on_change or change_alerts_changed) else []
     )
@@ -1539,7 +1580,11 @@ def check(key_file_path: str) -> None:
         name = _account_label or "OCI"
         body = f"🚨 *{name} alert*\n" + "\n".join(alerts) + cleanup_note
         body += f"\n[View billing]({billing_url()})"
-        notify(body)
+        if notify(body):
+            if change_alerts_changed:
+                sset("last_change_alert_signature", change_signature, config)
+            if threshold_alerts_changed:
+                sset("last_threshold_alert_signature", threshold_signature, config)
     elif cleanup_note:
         name = _account_label or "OCI"
         notify(f"🤖 *{name} cleanup*{cleanup_note}")

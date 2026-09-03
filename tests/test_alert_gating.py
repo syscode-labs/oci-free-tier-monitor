@@ -187,6 +187,79 @@ class ScheduledAlertGatingTests(unittest.TestCase):
         self.assertIn("A1 OCPUs: 4 / 2", message)
         self.assertIn("A1 memory: 24 / 12 GB", message)
 
+    def test_micro_compute_over_count_alerts(self):
+        """More than 2 live E2.1.Micro instances breaches the separate Micro pool."""
+        with self.patch_common_checks():
+            self.monitor.compute_instances.return_value = [
+                {
+                    "name": f"micro-{n}",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 0.125,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                }
+                for n in range(3)
+            ]
+
+            self.monitor.check("/tmp/key.pem")
+
+            message = self.monitor.send_telegram.call_args.args[1]
+        self.assertIn("E2 Micro instances: 3 / 2", message)
+
+    def test_compute_at_two_pool_limits_does_not_alert(self):
+        """Boundary case: A1 pool maxed (2 inst / 2 OCPU / 12 GB) plus 2 Micros is
+        fully within the two-pool Always Free model — no alert is sent."""
+        with (
+            self.patch_common_checks(),
+            mock.patch.multiple(
+                self.monitor,
+                drgs=mock.Mock(return_value=[]),
+                ipsec_connections=mock.Mock(return_value=[]),
+                nat_gateways=mock.Mock(return_value=[]),
+                network_load_balancers=mock.Mock(return_value=[]),
+                drg_route_alerts=mock.Mock(return_value=[]),
+                vpn_tunnel_alerts=mock.Mock(return_value=[]),
+            ),
+        ):
+            self.monitor.compute_instances.return_value = [
+                {
+                    "id": "i-1",
+                    "name": "talos-cp",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "id": "i-2",
+                    "name": "talos-worker",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "id": "i-3",
+                    "name": "bastion",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 0.125,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "id": "i-4",
+                    "name": "vpn-router",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 0.125,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                },
+            ]
+
+            self.monitor.check("/tmp/key.pem")
+
+            self.monitor.send_telegram.assert_not_called()
+
     def test_compute_instances_include_flex_shape_resources(self):
         shape_config = types.SimpleNamespace(ocpus=1.0, memory_in_gbs=6.0)
         instance = types.SimpleNamespace(
@@ -449,6 +522,149 @@ class NonFreeShapeTests(unittest.TestCase):
             ]
         )
         self.assertFalse(any("Non-free shape" in b for b in breaches))
+
+    def test_a1_pool_aggregate_breaches(self):
+        """Each A1 pool dimension (instances / OCPUs / RAM) breaches independently."""
+        # Instances over: 3 A1 instances but only 2 OCPU / 12 GB total
+        breaches = self.monitor.compute_free_tier_breaches(
+            [
+                {
+                    "name": "a",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "b",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "c",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 0.0,
+                    "memory_gb": 0.0,
+                    "state": "STOPPED",
+                },
+            ]
+        )
+        self.assertTrue(any("A1 instances: 3 / 2" in b for b in breaches))
+        self.assertFalse(any("A1 OCPUs:" in b for b in breaches))
+        self.assertFalse(any("A1 memory:" in b for b in breaches))
+
+        # OCPU over: 2 instances but 3 OCPUs
+        breaches = self.monitor.compute_free_tier_breaches(
+            [
+                {
+                    "name": "a",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 2.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "b",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+            ]
+        )
+        self.assertTrue(any("A1 OCPUs: 3 / 2" in b for b in breaches))
+        self.assertFalse(any("A1 instances:" in b for b in breaches))
+
+        # Memory over: 2 instances, 2 OCPUs, 24 GB
+        breaches = self.monitor.compute_free_tier_breaches(
+            [
+                {
+                    "name": "a",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 12.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "b",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 12.0,
+                    "state": "RUNNING",
+                },
+            ]
+        )
+        self.assertTrue(any("A1 memory: 24 / 12 GB" in b for b in breaches))
+        self.assertFalse(any("A1 instances:" in b for b in breaches))
+        self.assertFalse(any("A1 OCPUs:" in b for b in breaches))
+
+    def test_micro_pool_over_count_breach(self):
+        """Micro pool is separate from the A1 pool: >2 E2.1.Micro instances breaches."""
+        breaches = self.monitor.compute_free_tier_breaches(
+            [
+                {
+                    "name": "m1",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 0.125,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "m2",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 0.125,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "m3",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 0.125,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                },
+            ]
+        )
+        self.assertTrue(any("E2 Micro instances: 3 / 2" in b for b in breaches))
+        self.assertFalse(any("A1 " in b for b in breaches))
+
+    def test_two_pool_boundary_passes(self):
+        """A1 pool maxed (2 inst / 2 OCPU / 12 GB) + 2 Micros = within Always Free."""
+        breaches = self.monitor.compute_free_tier_breaches(
+            [
+                {
+                    "name": "talos-cp",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "talos-worker",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "bastion",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 0.125,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "vpn-router",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 0.125,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                },
+            ]
+        )
+        self.assertEqual(breaches, [])
 
 
 class KeepFloorImageTests(unittest.TestCase):

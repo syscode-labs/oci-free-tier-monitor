@@ -10,7 +10,7 @@ Active OCI cost and resource monitor with Telegram, webhook, and Grafana alerts 
 ## Features
 
 - **Cost alerting** — monthly spend vs a configurable GBP threshold
-- **Compute free-tier limits** — scans all accessible compartments and alerts above 2 Ampere A1 instances, 2 OCPUs, 12 GB RAM, or 2 E2 Micro instances; **any non-free shape (e.g. E4.Flex) is alerted as billable**
+- **Compute free-tier limits (two-pool model)** — scans all accessible compartments and alerts when the **Ampere A1 pool** exceeds 2 instances / 2 OCPUs / 12 GB RAM in aggregate, or when the **separate E2.1.Micro pool** (AMD/x86, fixed 1/8 OCPU + 1 GB each) exceeds 2 instances; **any non-free shape (e.g. E4.Flex) is alerted as billable**
 - **Change-gated scheduled alerts** — enabled by default; repeated non-threshold findings only alert when they change
 - **Load balancer count** — alerts when active LBs exceed the free tier limit
 - **Orphaned reserved public IPs** — detects and auto-deletes unassigned IPs burning budget
@@ -92,10 +92,10 @@ Fill in the required fields (OCI credentials, Telegram token/chat ID); everythin
 | `MAX_LB_COUNT` | | `1` | Max allowed active load balancers |
 | `MAX_FREE_PUBLIC_IPS` | | `2` | Unassigned reserved IPs before alerting (OCI free tier: 2) |
 | `MAX_OBJECT_STORAGE_GB` | | `18.0` | Object Storage alert threshold in GB (free tier limit: 20 GB) |
-| `MAX_AMPERE_INSTANCES` | | `2` | Max Always Free Ampere A1 instances |
-| `MAX_AMPERE_OCPUS` | | `2` | Max total Always Free Ampere A1 OCPUs |
-| `MAX_AMPERE_MEMORY_GB` | | `12` | Max total Always Free Ampere A1 memory in GB |
-| `MAX_MICRO_INSTANCES` | | `2` | Max Always Free E2 Micro instances |
+| `MAX_AMPERE_INSTANCES` | | `2` | Max Always Free Ampere A1 instances (A1 pool: 2 / 2 OCPU / 12 GB shared across instances) |
+| `MAX_AMPERE_OCPUS` | | `2` | Max total Always Free Ampere A1 OCPUs (A1 pool aggregate) |
+| `MAX_AMPERE_MEMORY_GB` | | `12` | Max total Always Free Ampere A1 memory in GB (A1 pool aggregate) |
+| `MAX_MICRO_INSTANCES` | | `2` | Max Always Free E2.1.Micro instances — a separate AMD/x86 pool (fixed 1/8 OCPU + 1 GB each), independent of the A1 pool |
 | `ALERT_ON_CHANGE` | | `true` | When enabled, scheduled non-threshold findings alert only when the finding set changes |
 | `CHECK_INTERVAL_HOURS` | | `6` | How often to run checks |
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |

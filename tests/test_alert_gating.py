@@ -409,5 +409,87 @@ class ScheduledAlertGatingTests(unittest.TestCase):
         self.assertIn("oci-talos-cp-1 `VM.Standard.A1.Flex` RUNNING — talos", message)
 
 
+class NonFreeShapeTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor()
+        self.monitor._state = self.monitor.DEFAULTS.copy()
+
+    def test_non_free_shape_flagged(self):
+        breaches = self.monitor.compute_free_tier_breaches(
+            [
+                {
+                    "name": "oci-bastion-01",
+                    "shape": "VM.Standard.E4.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                }
+            ]
+        )
+        self.assertTrue(any("Non-free shape" in b for b in breaches))
+        self.assertTrue(any("E4.Flex" in b for b in breaches))
+
+    def test_free_shapes_not_flagged(self):
+        breaches = self.monitor.compute_free_tier_breaches(
+            [
+                {
+                    "name": "a",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1.0,
+                    "memory_gb": 6.0,
+                    "state": "RUNNING",
+                },
+                {
+                    "name": "b",
+                    "shape": "VM.Standard.E2.1.Micro",
+                    "ocpus": 1.0,
+                    "memory_gb": 1.0,
+                    "state": "RUNNING",
+                },
+            ]
+        )
+        self.assertFalse(any("Non-free shape" in b for b in breaches))
+
+
+class KeepFloorImageTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor()
+        self.monitor._state = self.monitor.DEFAULTS.copy()
+
+    def test_keeps_newest_golden_per_type(self):
+        imgs = [
+            {"id": "1", "name": "golden-micro-20260901", "size_gb": 5, "in_use": False},
+            {"id": "2", "name": "golden-micro-20260902", "size_gb": 5, "in_use": False},
+            {"id": "3", "name": "import-random", "size_gb": 3, "in_use": False},
+        ]
+        surplus = self.monitor._keep_floor_images(imgs)
+        ids = {i["id"] for i in surplus}
+        # keep newest golden (id 2); delete old golden (1) + non-golden unused (3)
+        self.assertEqual(ids, {"1", "3"})
+
+    def test_never_touches_in_use_images(self):
+        imgs = [
+            {"id": "1", "name": "golden-micro-1", "size_gb": 5, "in_use": True},
+            {"id": "2", "name": "in-use-thing", "size_gb": 4, "in_use": True},
+        ]
+        self.assertEqual(self.monitor._keep_floor_images(imgs), [])
+
+    def test_no_golden_deletes_all_unused(self):
+        imgs = [{"id": "3", "name": "import-random", "size_gb": 3, "in_use": False}]
+        surplus = self.monitor._keep_floor_images(imgs)
+        self.assertEqual({i["id"] for i in surplus}, {"3"})
+
+    def test_run_cleanup_deletes_images(self):
+        client = mock.Mock()
+        self.monitor.oci = types.SimpleNamespace(
+            core=types.SimpleNamespace(ComputeClient=mock.Mock(return_value=client))
+        )
+        report = self.monitor.run_cleanup(
+            {}, [], [], [], [{"id": "img-1", "name": "old", "size_gb": 5}]
+        )
+        client.delete_image.assert_called_once_with("img-1")
+        self.assertEqual(report["deleted_images"][0]["id"], "img-1")
+
+
 if __name__ == "__main__":
     unittest.main()

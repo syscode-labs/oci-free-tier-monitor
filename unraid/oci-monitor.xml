@@ -49,6 +49,12 @@
   <Config Name="Telegram Chat ID" Target="TELEGRAM_CHAT_ID" Default="" Mode=""
     Description="Chat or user ID to send alerts to." Type="Variable" Display="always" Required="true" Mask="false"/>
 
+  <Config Name="Grafana URL" Target="GRAFANA_URL" Default="" Mode=""
+    Description="Grafana base URL for organization-wide alert annotations (optional). Set with Grafana API Token." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Grafana API Token" Target="GRAFANA_API_TOKEN" Default="" Mode=""
+    Description="Service-account token with organization annotation creation permission (optional). Set with Grafana URL." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+
   <Config Name="Cost Threshold (GBP)" Target="COST_THRESHOLD_GBP" Default="5.0" Mode=""
     Description="Monthly spend threshold in GBP before alerting." Type="Variable" Display="advanced" Required="false" Mask="false">5.0</Config>
 

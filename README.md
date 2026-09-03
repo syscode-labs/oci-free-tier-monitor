@@ -10,13 +10,13 @@ Active OCI cost and resource monitor with Telegram, webhook, and Grafana alerts 
 ## Features
 
 - **Cost alerting** — monthly spend vs a configurable GBP threshold
-- **Compute free-tier limits** — scans all accessible compartments and alerts above 2 Ampere A1 instances, 2 OCPUs, 12 GB RAM, or 2 E2 Micro instances
+- **Compute free-tier limits** — scans all accessible compartments and alerts above 2 Ampere A1 instances, 2 OCPUs, 12 GB RAM, or 2 E2 Micro instances; **any non-free shape (e.g. E4.Flex) is alerted as billable**
 - **Change-gated scheduled alerts** — enabled by default; repeated non-threshold findings only alert when they change
 - **Load balancer count** — alerts when active LBs exceed the free tier limit
 - **Orphaned reserved public IPs** — detects and auto-deletes unassigned IPs burning budget
 - **Orphaned volumes** — detects and auto-deletes unattached boot/block volumes
 - **Volume backup scan** — detects unexpected backups consuming storage quota
-- **Custom image scan** — detects unused imported images taking up Object Storage
+- **Custom image scan** — detects unused imported images taking up Object Storage; auto-cleanup and `/cleanup images` keep 1 unused golden image per type as a rebuild floor and delete the surplus
 - **Object Storage usage** — tracks total bucket usage against the 20 GB free tier limit
 - **Auto-cleanup** — enabled by default; deletes orphans automatically each check cycle
 - **Month-end invoice preview** — on the last 2 days of the month, sends a one-off 🧾 message with VAT-inclusive total and per-service cost breakdown

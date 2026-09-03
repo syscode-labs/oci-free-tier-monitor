@@ -79,7 +79,7 @@ HELP_TEXT = """\
 /lbmax <n> — set max allowed load balancers
 /silence — mute scheduled alerts for this calendar month
 /unsilence — re-enable scheduled alerts
-/cleanup images — delete all unused custom images
+/cleanup images — delete surplus unused custom images (keeps 1 golden/type)
 /help [command] — show this message, or detail for a command\
 """
 
@@ -129,7 +129,7 @@ Usage: `/lbmax 1`\
 """,
     "cleanup": """\
 *Cleanup*
-`/cleanup images` — permanently deletes all custom images not currently in use by any instance. This is irreversible. Use `/scan` first to review what will be removed.\
+`/cleanup images` — permanently deletes surplus unused custom images: keeps the newest unused golden image per type (e.g. `golden-micro`), deletes other unused ones and surplus golden versions. In-use images are never touched. Irreversible — use `/scan` first to review.\
 """,
     "silence": """\
 *Silence / Unsilence*
@@ -871,6 +871,16 @@ def compute_instances(config: dict) -> List[dict]:
     return result
 
 
+FREE_SHAPES = {
+    "VM.Standard.A1.Flex",
+    "VM.Standard.E2.1.Micro",
+}
+
+# Golden images to always keep, one per type (family). Matched as prefix of the
+# image display name, before the version/date suffix (e.g. golden-micro-20260902).
+GOLDEN_IMAGE_PREFIXES = ("golden-micro",)
+
+
 def compute_free_tier_breaches(instances: List[dict]) -> List[str]:
     ampere = [i for i in instances if i["shape"] == "VM.Standard.A1.Flex"]
     micro = [i for i in instances if i["shape"] == "VM.Standard.E2.1.Micro"]
@@ -889,6 +899,12 @@ def compute_free_tier_breaches(instances: List[dict]) -> List[str]:
         breaches.append(
             f"E2 Micro instances: {len(micro)} / {sget('max_micro_instances')}"
         )
+    for i in instances:
+        if i["shape"] not in FREE_SHAPES:
+            breaches.append(
+                f"Non-free shape: {i['name']} `{i['shape']}` — billable, "
+                "not in Always Free tier (A1.Flex, E2.1.Micro only)"
+            )
     return breaches
 
 
@@ -931,6 +947,20 @@ def _cleanup_block_volumes(config: dict, vols: List[dict]) -> tuple:
     return deleted, errors
 
 
+def _keep_floor_images(imgs: List[dict]) -> List[dict]:
+    """Split unused images into keepers (1 golden per type) and deletable ones.
+
+    Keeps the newest unused image per golden-image prefix so a rebuild path always
+    exists; everything else is deletable. In-use images are never returned here.
+    """
+    keep: Set[str] = set()
+    for prefix in GOLDEN_IMAGE_PREFIXES:
+        family = [i for i in imgs if not i["in_use"] and i["name"].startswith(prefix)]
+        if family:
+            keep.add(max(family, key=lambda i: i["name"])["id"])
+    return [i for i in imgs if not i["in_use"] and i["id"] not in keep]
+
+
 def _cleanup_images(config: dict, images: List[dict]) -> tuple:
     client = oci.core.ComputeClient(config)
     deleted, errors = [], []
@@ -943,12 +973,19 @@ def _cleanup_images(config: dict, images: List[dict]) -> tuple:
     return deleted, errors
 
 
-def run_cleanup(config: dict, ips: list, boot_vols: list, block_vols: list) -> dict:
+def run_cleanup(
+    config: dict,
+    ips: list,
+    boot_vols: list,
+    block_vols: list,
+    images: list | None = None,
+) -> dict:
     report = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "deleted_ips": [],
         "deleted_boot_volumes": [],
         "deleted_block_volumes": [],
+        "deleted_images": [],
         "errors": [],
     }
     if ips:
@@ -962,6 +999,10 @@ def run_cleanup(config: dict, ips: list, boot_vols: list, block_vols: list) -> d
     if block_vols:
         d, e = _cleanup_block_volumes(config, block_vols)
         report["deleted_block_volumes"] = d
+        report["errors"] += e
+    if images:
+        d, e = _cleanup_images(config, images)
+        report["deleted_images"] = d
         report["errors"] += e
     return report
 
@@ -1327,6 +1368,8 @@ def _cleanup_summary(report: dict) -> str:
             for v in report["deleted_boot_volumes"] + report["deleted_block_volumes"]
         )
         parts.append(f"{gb} GB volume(s) deleted")
+    if report.get("deleted_images"):
+        parts.append(f"{len(report['deleted_images'])} surplus image(s) deleted")
     if report["errors"]:
         parts.append(f"{len(report['errors'])} error(s)")
     return ", ".join(parts) if parts else "nothing to clean"
@@ -1501,6 +1544,7 @@ def check(key_file_path: str) -> None:
     except Exception as e:
         threshold_alerts.append(f"⚠️ Backup check failed: {e}")
 
+    imgs: List[dict] = []
     try:
         imgs = custom_images(config)
         unused_imgs = [i for i in imgs if not i["in_use"]]
@@ -1568,9 +1612,15 @@ def check(key_file_path: str) -> None:
     )
 
     cleanup_note = ""
-    if auto and (ips or boot_vols or block_vols):
+    surplus_images: List[dict] = []
+    if auto:
         try:
-            report = run_cleanup(config, ips, boot_vols, block_vols)
+            surplus_images = _keep_floor_images(imgs)
+        except Exception:
+            surplus_images = []
+    if auto and (ips or boot_vols or block_vols or surplus_images):
+        try:
+            report = run_cleanup(config, ips, boot_vols, block_vols, surplus_images)
             _save_report_to_bucket(config, report)
             cleanup_note = f"\n🤖 Auto-cleanup: {_cleanup_summary(report)}"
         except Exception as e:
@@ -1684,14 +1734,19 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
         if sub == "images":
             try:
                 imgs = custom_images(config)
-                unused = [i for i in imgs if not i["in_use"]]
-                if not unused:
-                    reply = "✅ No unused custom images found."
+                surplus = _keep_floor_images(imgs)
+                kept = [i for i in imgs if not i["in_use"] and i not in surplus]
+                if not surplus:
+                    reply = "✅ No surplus custom images found (golden floor kept)."
                 else:
-                    deleted, errors = _cleanup_images(config, unused)
+                    deleted, errors = _cleanup_images(config, surplus)
                     lines = [f"🗑️ Deleted {len(deleted)} custom image(s):"]
                     for img in deleted:
                         lines.append(f"  • {img['name']} ({img['size_gb']} GB)")
+                    if kept:
+                        lines.append(
+                            f"\n🖼️ Kept {len(kept)} unused golden image(s) (1 per type)"
+                        )
                     if errors:
                         lines.append(f"\n⚠️ {len(errors)} failed:")
                         for err in errors:

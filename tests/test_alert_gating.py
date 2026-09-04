@@ -707,5 +707,117 @@ class KeepFloorImageTests(unittest.TestCase):
         self.assertEqual(report["deleted_images"][0]["id"], "img-1")
 
 
+class BootVolumeCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.monitor = load_monitor()
+
+    def _volume(self, **overrides):
+        volume = {
+            "id": "boot-1",
+            "name": "failed-launch",
+            "size_gb": 50,
+            "availability_domain": "ad-1",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "freeform_tags": {"oci-monitor.syscode.io/cleanup": "true"},
+        }
+        volume.update(overrides)
+        return volume
+
+    def _mock_clients(self, fresh, attachments):
+        block_client = mock.Mock()
+        block_client.get_boot_volume.return_value = types.SimpleNamespace(data=fresh)
+        compute_client = mock.Mock()
+        self.monitor.oci = types.SimpleNamespace(
+            core=types.SimpleNamespace(
+                BlockstorageClient=mock.Mock(return_value=block_client),
+                ComputeClient=mock.Mock(return_value=compute_client),
+            ),
+            pagination=types.SimpleNamespace(
+                list_call_get_all_results=mock.Mock(
+                    return_value=types.SimpleNamespace(data=attachments)
+                )
+            ),
+            wait_until=mock.Mock(),
+        )
+        return block_client
+
+    def test_boot_volume_cleanup_requires_explicit_ownership_tag(self):
+        fresh = types.SimpleNamespace()
+        block_client = self._mock_clients(fresh, [])
+        with mock.patch.object(self.monitor, "BOOT_VOLUME_CLEANUP_TAG", ""):
+            deleted, skipped, errors = self.monitor._cleanup_boot_volumes(
+                {}, [self._volume()]
+            )
+
+        self.assertEqual(deleted, [])
+        self.assertEqual(errors, [])
+        self.assertEqual(skipped[0]["reason"], "ownership tag is not configured")
+        block_client.delete_boot_volume.assert_not_called()
+
+    def test_boot_volume_cleanup_rechecks_attachment_and_waits_for_termination(self):
+        fresh = types.SimpleNamespace(
+            id="boot-1",
+            display_name="failed-launch",
+            size_in_gbs=50,
+            availability_domain="ad-1",
+            time_created="2026-01-01T00:00:00+00:00",
+            freeform_tags={"oci-monitor.syscode.io/cleanup": "true"},
+            lifecycle_state="AVAILABLE",
+        )
+        block_client = self._mock_clients(fresh, [])
+        with mock.patch.object(
+            self.monitor,
+            "BOOT_VOLUME_CLEANUP_TAG",
+            "oci-monitor.syscode.io/cleanup=true",
+        ):
+            deleted, skipped, errors = self.monitor._cleanup_boot_volumes(
+                {}, [self._volume()]
+            )
+
+        self.assertEqual([v["id"] for v in deleted], ["boot-1"])
+        self.assertEqual(skipped, [])
+        self.assertEqual(errors, [])
+        block_client.delete_boot_volume.assert_called_once_with("boot-1")
+        self.monitor.oci.wait_until.assert_called_once()
+
+    def test_boot_volume_cleanup_skips_volume_reconnected_after_scan(self):
+        fresh = types.SimpleNamespace(
+            id="boot-1",
+            display_name="failed-launch",
+            size_in_gbs=50,
+            availability_domain="ad-1",
+            time_created="2026-01-01T00:00:00+00:00",
+            freeform_tags={"oci-monitor.syscode.io/cleanup": "true"},
+            lifecycle_state="AVAILABLE",
+        )
+        attachment = types.SimpleNamespace(
+            boot_volume_id="boot-1", lifecycle_state="ATTACHED"
+        )
+        block_client = self._mock_clients(fresh, [attachment])
+        with mock.patch.object(
+            self.monitor,
+            "BOOT_VOLUME_CLEANUP_TAG",
+            "oci-monitor.syscode.io/cleanup=true",
+        ):
+            deleted, skipped, errors = self.monitor._cleanup_boot_volumes(
+                {}, [self._volume()]
+            )
+
+        self.assertEqual(deleted, [])
+        self.assertEqual(errors, [])
+        self.assertEqual(skipped[0]["reason"], "attached during recheck")
+        block_client.delete_boot_volume.assert_not_called()
+
+    def test_unauthorized_telegram_command_does_not_change_state_or_reply(self):
+        with (
+            mock.patch.object(self.monitor, "build_oci_config") as build_config,
+            mock.patch.object(self.monitor, "send_telegram") as send,
+        ):
+            self.monitor.handle_command("/autocleanup off", "other-chat", "/tmp/key")
+
+        build_config.assert_not_called()
+        send.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

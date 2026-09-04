@@ -14,7 +14,7 @@ Active OCI cost and resource monitor with Telegram, webhook, and Grafana alerts 
 - **Change-gated scheduled alerts** — enabled by default; repeated non-threshold findings only alert when they change
 - **Load balancer count** — alerts when active LBs exceed the free tier limit
 - **Orphaned reserved public IPs** — detects and auto-deletes unassigned IPs burning budget
-- **Orphaned volumes** — detects and auto-deletes unattached boot/block volumes
+- **Orphaned volumes** — reports unattached volumes; boot volumes are deleted only after an ownership-tag, age, and fresh-attachment check
 - **Volume backup scan** — detects unexpected backups consuming storage quota
 - **Custom image scan** — detects unused imported images taking up Object Storage; auto-cleanup and `/cleanup images` keep 1 unused golden image per type as a rebuild floor and delete the surplus
 - **Object Storage usage** — tracks total bucket usage against the 20 GB free tier limit
@@ -98,6 +98,8 @@ Fill in the required fields (OCI credentials, Telegram token/chat ID); everythin
 | `MAX_MICRO_INSTANCES` | | `2` | Max Always Free E2.1.Micro instances — a separate AMD/x86 pool (fixed 1/8 OCPU + 1 GB each), independent of the A1 pool |
 | `ALERT_ON_CHANGE` | | `true` | When enabled, scheduled non-threshold findings alert only when the finding set changes |
 | `CHECK_INTERVAL_HOURS` | | `6` | How often to run checks |
+| `BOOT_VOLUME_CLEANUP_TAG` | | — | Required `key=value` freeform tag for boot volumes eligible for deletion. Unset means boot-volume deletion is disabled. |
+| `BOOT_VOLUME_CLEANUP_GRACE_HOURS` | | `24` | Minimum age before an ownership-tagged boot volume can be deleted. |
 | `OCI_STATE_BUCKET` | | — | Object Storage bucket for state and cleanup reports |
 | `OCI_ACCOUNT_LABEL` | | compartment name | Display name shown in alerts and status messages (e.g. `oci@example.com-123456`) |
 | `METRICS_PORT` | | — | Set to a port (e.g. `9100`) to expose a Prometheus `/metrics` endpoint. Off by default. |

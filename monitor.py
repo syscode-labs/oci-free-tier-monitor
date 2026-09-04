@@ -23,6 +23,10 @@ API_KEY_PEM = os.environ["OCI_API_KEY"]
 COMPARTMENT_OCID = os.environ["OCI_COMPARTMENT_OCID"]
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+BOOT_VOLUME_CLEANUP_TAG = os.environ.get("BOOT_VOLUME_CLEANUP_TAG", "")
+BOOT_VOLUME_CLEANUP_GRACE_HOURS = int(
+    os.environ.get("BOOT_VOLUME_CLEANUP_GRACE_HOURS", "24")
+)
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 GRAFANA_URL = os.environ.get("GRAFANA_URL", "").rstrip("/")
@@ -725,7 +729,14 @@ def orphaned_boot_volumes(config: dict) -> List[dict]:
             a.boot_volume_id for a in attachments if a.lifecycle_state == "ATTACHED"
         }
         result += [
-            {"id": v.id, "name": v.display_name, "size_gb": v.size_in_gbs}
+            {
+                "id": v.id,
+                "name": v.display_name,
+                "size_gb": v.size_in_gbs,
+                "availability_domain": ad,
+                "created_at": str(v.time_created),
+                "freeform_tags": v.freeform_tags or {},
+            }
             for v in available
             if v.id not in attached_ids
         ]
@@ -923,16 +934,74 @@ def _cleanup_ips(config: dict, ips: List[dict]) -> tuple:
     return deleted, errors
 
 
+def _boot_volume_skip_reason(
+    volume: dict, now: Optional[datetime.datetime] = None
+) -> Optional[str]:
+    """Return why a boot volume is not safe to delete, or None when it is eligible."""
+    if "=" not in BOOT_VOLUME_CLEANUP_TAG:
+        return "ownership tag is not configured"
+    tag_key, tag_value = BOOT_VOLUME_CLEANUP_TAG.split("=", 1)
+    if volume.get("freeform_tags", {}).get(tag_key) != tag_value:
+        return "ownership tag does not match"
+    created_at = datetime.datetime.fromisoformat(
+        volume["created_at"].replace("Z", "+00:00")
+    )
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now - created_at < datetime.timedelta(hours=BOOT_VOLUME_CLEANUP_GRACE_HOURS):
+        return f"younger than {BOOT_VOLUME_CLEANUP_GRACE_HOURS}h grace period"
+    return None
+
+
 def _cleanup_boot_volumes(config: dict, vols: List[dict]) -> tuple:
     client = oci.core.BlockstorageClient(config)
-    deleted, errors = [], []
+    compute_client = oci.core.ComputeClient(config)
+    deleted, skipped, errors = [], [], []
     for v in vols:
+        reason = _boot_volume_skip_reason(v)
+        if reason:
+            skipped.append({"item": v, "reason": reason})
+            continue
         try:
+            fresh = client.get_boot_volume(v["id"]).data
+            refreshed = {
+                "id": fresh.id,
+                "name": fresh.display_name,
+                "size_gb": fresh.size_in_gbs,
+                "availability_domain": fresh.availability_domain,
+                "created_at": str(fresh.time_created),
+                "freeform_tags": fresh.freeform_tags or {},
+            }
+            if fresh.lifecycle_state != "AVAILABLE":
+                skipped.append({"item": v, "reason": "no longer AVAILABLE"})
+                continue
+            attachments = oci.pagination.list_call_get_all_results(
+                compute_client.list_boot_volume_attachments,
+                availability_domain=fresh.availability_domain,
+                compartment_id=COMPARTMENT_OCID,
+            ).data
+            if any(
+                a.boot_volume_id == fresh.id and a.lifecycle_state == "ATTACHED"
+                for a in attachments
+            ):
+                skipped.append({"item": v, "reason": "attached during recheck"})
+                continue
+            reason = _boot_volume_skip_reason(refreshed)
+            if reason:
+                skipped.append({"item": v, "reason": reason})
+                continue
             client.delete_boot_volume(v["id"])
-            deleted.append(v)
+            oci.wait_until(
+                client,
+                client.get_boot_volume(v["id"]),
+                "lifecycle_state",
+                "TERMINATED",
+                max_wait_seconds=300,
+                max_interval_seconds=5,
+            )
+            deleted.append(refreshed)
         except Exception as e:
             errors.append({"item": v, "error": str(e)})
-    return deleted, errors
+    return deleted, skipped, errors
 
 
 def _cleanup_block_volumes(config: dict, vols: List[dict]) -> tuple:
@@ -984,6 +1053,7 @@ def run_cleanup(
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "deleted_ips": [],
         "deleted_boot_volumes": [],
+        "skipped_boot_volumes": [],
         "deleted_block_volumes": [],
         "deleted_images": [],
         "errors": [],
@@ -993,8 +1063,9 @@ def run_cleanup(
         report["deleted_ips"] = d
         report["errors"] += e
     if boot_vols:
-        d, e = _cleanup_boot_volumes(config, boot_vols)
+        d, s, e = _cleanup_boot_volumes(config, boot_vols)
         report["deleted_boot_volumes"] = d
+        report["skipped_boot_volumes"] = s
         report["errors"] += e
     if block_vols:
         d, e = _cleanup_block_volumes(config, block_vols)
@@ -1367,7 +1438,9 @@ def _cleanup_summary(report: dict) -> str:
             v["size_gb"]
             for v in report["deleted_boot_volumes"] + report["deleted_block_volumes"]
         )
-        parts.append(f"{gb} GB volume(s) deleted")
+        parts.append(f"{gb} GB volume storage reclaimed")
+    if report.get("skipped_boot_volumes"):
+        parts.append(f"{len(report['skipped_boot_volumes'])} boot volume(s) skipped")
     if report.get("deleted_images"):
         parts.append(f"{len(report['deleted_images'])} surplus image(s) deleted")
     if report["errors"]:
@@ -1665,6 +1738,9 @@ def check(key_file_path: str) -> None:
 
 
 def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
+    if chat_id != CHAT_ID:
+        print("[bot] ignored command from unauthorized chat", flush=True)
+        return
     config = build_oci_config(key_file_path)
     parts = text.split()
     cmd = parts[0].split("@")[0]

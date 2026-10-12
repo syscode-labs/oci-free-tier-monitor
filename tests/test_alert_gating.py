@@ -97,6 +97,59 @@ class ScheduledAlertGatingTests(unittest.TestCase):
 
             self.assertEqual(self.monitor.send_telegram.call_count, 2)
 
+    def test_zero_threshold_is_quiet_at_zero_and_alerts_on_positive_spend(self):
+        self.monitor._state["cost_threshold"] = 0.0
+        with (
+            self.patch_common_checks(),
+            mock.patch.multiple(
+                self.monitor,
+                drgs=mock.Mock(return_value=[]),
+                ipsec_connections=mock.Mock(return_value=[]),
+                nat_gateways=mock.Mock(return_value=[]),
+                network_load_balancers=mock.Mock(return_value=[]),
+                drg_route_alerts=mock.Mock(return_value=[]),
+                vpn_tunnel_alerts=mock.Mock(return_value=[]),
+            ),
+        ):
+            send = self.monitor.send_telegram
+            self.monitor.monthly_spend.return_value = (0.0, "GBP")
+            self.monitor.check("/tmp/key.pem")
+            send.assert_not_called()
+
+            self.monitor.monthly_spend.return_value = (0.01, "GBP")
+            self.monitor.check("/tmp/key.pem")
+
+            self.assertEqual(send.call_count, 1)
+            self.assertIn("Spend: GBP 0.01 / 0.00 threshold", send.call_args.args[1])
+
+    def test_explicit_zero_threshold_overrides_bucket_and_persists(self):
+        bucket_state = {"cost_threshold": 5.0}
+        with (
+            mock.patch.object(self.monitor, "COST_THRESHOLD_GBP", "0"),
+            mock.patch.object(
+                self.monitor, "_state_from_bucket", return_value=bucket_state
+            ),
+            mock.patch.object(self.monitor, "_save_state_to_bucket") as save_bucket,
+            mock.patch("builtins.open", mock.mock_open()),
+            mock.patch.object(self.monitor.os, "makedirs"),
+        ):
+            self.monitor.load_state(config={"bucket": True})
+            self.assertEqual(self.monitor.sget("cost_threshold"), 0.0)
+            self.monitor.save_state(config={"bucket": True})
+
+        self.assertEqual(save_bucket.call_args.args[1]["cost_threshold"], 0.0)
+
+    def test_persisted_threshold_is_preserved_without_environment_override(self):
+        with (
+            mock.patch.object(self.monitor, "COST_THRESHOLD_GBP", None),
+            mock.patch.object(
+                self.monitor, "_state_from_bucket", return_value={"cost_threshold": 5.0}
+            ),
+        ):
+            self.monitor.load_state(config={})
+
+        self.assertEqual(self.monitor.sget("cost_threshold"), 5.0)
+
     def test_vpn_alert_retries_after_delivery_failure(self):
         """A failed send must not acknowledge a tunnel-down signature."""
         notify = mock.Mock(side_effect=[False, True])
@@ -817,6 +870,70 @@ class BootVolumeCleanupTests(unittest.TestCase):
 
         build_config.assert_not_called()
         send.assert_not_called()
+
+    def test_deployment_cleanup_policy_overrides_retained_state_and_rejects_enable(
+        self,
+    ):
+        self.monitor._state = self.monitor.DEFAULTS.copy()
+        self.monitor._state["auto_cleanup"] = True
+        with (
+            mock.patch.object(self.monitor, "AUTO_CLEANUP_ENABLED", False),
+            mock.patch.object(self.monitor, "save_state"),
+            mock.patch.object(self.monitor, "send_telegram") as send,
+        ):
+            self.monitor.load_state()
+            self.assertFalse(self.monitor.sget("auto_cleanup"))
+            self.monitor.handle_command("/autocleanup on", "chat", "/tmp/key")
+
+        self.assertIn("disabled by deployment policy", send.call_args.args[1])
+        self.assertFalse(self.monitor.sget("auto_cleanup"))
+
+    def test_deployment_policy_blocks_every_deletion_helper_and_scheduled_cleanup(self):
+        image = {"id": "image-1", "name": "old", "size_gb": 1, "in_use": False}
+        volume = self._volume()
+        with mock.patch.object(self.monitor, "AUTO_CLEANUP_ENABLED", False):
+            self.assertEqual(self.monitor._cleanup_ips({}, [{"id": "ip-1"}]), ([], []))
+            self.assertEqual(
+                self.monitor._cleanup_boot_volumes({}, [volume]), ([], [], [])
+            )
+            self.assertEqual(
+                self.monitor._cleanup_block_volumes({}, [volume]), ([], [])
+            )
+            self.assertEqual(self.monitor._cleanup_images({}, [image]), ([], []))
+
+        with (
+            mock.patch.object(self.monitor, "AUTO_CLEANUP_ENABLED", False),
+            mock.patch.object(self.monitor, "_cleanup_ips") as ips,
+            mock.patch.object(self.monitor, "_cleanup_boot_volumes") as boot_volumes,
+            mock.patch.object(self.monitor, "_cleanup_block_volumes") as block_volumes,
+            mock.patch.object(self.monitor, "_cleanup_images") as images,
+        ):
+            report = self.monitor.run_cleanup(
+                {}, [{"id": "ip-1"}], [volume], [volume], [image]
+            )
+
+        self.assertEqual(report["deleted_ips"], [])
+        self.assertEqual(report["deleted_boot_volumes"], [])
+        self.assertEqual(report["deleted_block_volumes"], [])
+        self.assertEqual(report["deleted_images"], [])
+        ips.assert_not_called()
+        boot_volumes.assert_not_called()
+        block_volumes.assert_not_called()
+        images.assert_not_called()
+
+    def test_deployment_policy_blocks_cleanup_images_command(self):
+        with (
+            mock.patch.object(self.monitor, "AUTO_CLEANUP_ENABLED", False),
+            mock.patch.object(self.monitor, "build_oci_config"),
+            mock.patch.object(self.monitor, "custom_images") as custom_images,
+            mock.patch.object(self.monitor, "_cleanup_images") as cleanup_images,
+            mock.patch.object(self.monitor, "send_telegram") as send,
+        ):
+            self.monitor.handle_command("/cleanup images", "chat", "/tmp/key")
+
+        custom_images.assert_not_called()
+        cleanup_images.assert_not_called()
+        self.assertIn("disabled by deployment policy", send.call_args.args[1])
 
 
 if __name__ == "__main__":

@@ -78,6 +78,9 @@
   <Config Name="Alert on Change Only" Target="ALERT_ON_CHANGE" Default="true" Mode=""
     Description="Non-threshold findings alert only when they first appear, change, or clear." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
 
+  <Config Name="Allow Auto-cleanup" Target="AUTO_CLEANUP_ENABLED" Default="true" Mode=""
+    Description="Set false to prevent all automatic resource deletion, even if retained state previously enabled it." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+
   <Config Name="Check Interval (hours)" Target="CHECK_INTERVAL_HOURS" Default="6" Mode=""
     Description="How often to run checks." Type="Variable" Display="advanced" Required="false" Mask="false">6</Config>
 

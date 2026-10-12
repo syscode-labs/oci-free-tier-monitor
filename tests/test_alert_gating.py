@@ -818,6 +818,23 @@ class BootVolumeCleanupTests(unittest.TestCase):
         build_config.assert_not_called()
         send.assert_not_called()
 
+    def test_deployment_cleanup_policy_overrides_retained_state_and_rejects_enable(
+        self,
+    ):
+        self.monitor._state = self.monitor.DEFAULTS.copy()
+        self.monitor._state["auto_cleanup"] = True
+        with (
+            mock.patch.object(self.monitor, "AUTO_CLEANUP_ENABLED", False),
+            mock.patch.object(self.monitor, "save_state"),
+            mock.patch.object(self.monitor, "send_telegram") as send,
+        ):
+            self.monitor.load_state()
+            self.assertFalse(self.monitor.sget("auto_cleanup"))
+            self.monitor.handle_command("/autocleanup on", "chat", "/tmp/key")
+
+        self.assertIn("disabled by deployment policy", send.call_args.args[1])
+        self.assertFalse(self.monitor.sget("auto_cleanup"))
+
 
 if __name__ == "__main__":
     unittest.main()

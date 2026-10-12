@@ -36,6 +36,11 @@ OCI_STATE_BUCKET = os.environ.get("OCI_STATE_BUCKET", "")
 OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
 VAT_RATE = float(os.environ.get("VAT_RATE", "0.20"))
 METRICS_PORT = os.environ.get("METRICS_PORT", "")
+AUTO_CLEANUP_ENABLED = os.environ.get("AUTO_CLEANUP_ENABLED", "true").lower() not in (
+    "0",
+    "false",
+    "no",
+)
 
 STATE_FILE = "/data/state.json"
 BUCKET_STATE_KEY = "oci-monitor/state.json"
@@ -197,6 +202,10 @@ def load_state(config: Optional[dict] = None) -> None:
     _state = loaded
     for k, v in DEFAULTS.items():
         _state.setdefault(k, v)
+    # A deployment-level off switch must override any retained local or bucket state.
+    # This keeps alert-only recovery safe even if an earlier state enabled cleanup.
+    if not AUTO_CLEANUP_ENABLED:
+        _state["auto_cleanup"] = False
 
 
 def save_state(config: Optional[dict] = None) -> None:
@@ -1762,8 +1771,11 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
             auto = sget("auto_cleanup")
             reply = f"🤖 Auto-cleanup is currently *{'on' if auto else 'off'}*."
         elif parts[1] == "on":
-            sset("auto_cleanup", True, config)
-            reply = "✅ Auto-cleanup enabled. Orphaned IPs and volumes will be deleted automatically."
+            if AUTO_CLEANUP_ENABLED:
+                sset("auto_cleanup", True, config)
+                reply = "✅ Auto-cleanup enabled. Orphaned IPs and volumes will be deleted automatically."
+            else:
+                reply = "🔒 Auto-cleanup is disabled by deployment policy."
         elif parts[1] == "off":
             sset("auto_cleanup", False, config)
             reply = (

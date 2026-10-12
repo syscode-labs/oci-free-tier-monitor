@@ -36,6 +36,7 @@ OCI_STATE_BUCKET = os.environ.get("OCI_STATE_BUCKET", "")
 OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
 VAT_RATE = float(os.environ.get("VAT_RATE", "0.20"))
 METRICS_PORT = os.environ.get("METRICS_PORT", "")
+COST_THRESHOLD_GBP = os.environ.get("COST_THRESHOLD_GBP")
 AUTO_CLEANUP_ENABLED = os.environ.get("AUTO_CLEANUP_ENABLED", "true").lower() not in (
     "0",
     "false",
@@ -57,7 +58,9 @@ _availability_domains: List[str] = []
 _os_namespace = ""  # OCI Object Storage tenancy namespace
 
 DEFAULTS = {
-    "cost_threshold": float(os.environ.get("COST_THRESHOLD_GBP", "5.0")),
+    "cost_threshold": float(
+        COST_THRESHOLD_GBP if COST_THRESHOLD_GBP is not None else "5.0"
+    ),
     "max_lb_count": int(os.environ.get("MAX_LB_COUNT", "1")),
     "max_free_public_ips": int(os.environ.get("MAX_FREE_PUBLIC_IPS", "2")),
     "max_object_storage_gb": float(os.environ.get("MAX_OBJECT_STORAGE_GB", "18.0")),
@@ -202,6 +205,10 @@ def load_state(config: Optional[dict] = None) -> None:
     _state = loaded
     for k, v in DEFAULTS.items():
         _state.setdefault(k, v)
+    # An explicitly supplied deployment threshold overrides retained local or bucket
+    # state, including numeric zero. Without it, persisted settings remain unchanged.
+    if COST_THRESHOLD_GBP is not None:
+        _state["cost_threshold"] = float(COST_THRESHOLD_GBP)
     # A deployment-level off switch must override any retained local or bucket state.
     # This keeps alert-only recovery safe even if an earlier state enabled cleanup.
     if not AUTO_CLEANUP_ENABLED:
@@ -932,6 +939,8 @@ def compute_free_tier_breaches(instances: List[dict]) -> List[str]:
 
 
 def _cleanup_ips(config: dict, ips: List[dict]) -> tuple:
+    if not AUTO_CLEANUP_ENABLED:
+        return [], []
     client = oci.core.VirtualNetworkClient(config)
     deleted, errors = [], []
     for ip in ips:
@@ -962,6 +971,8 @@ def _boot_volume_skip_reason(
 
 
 def _cleanup_boot_volumes(config: dict, vols: List[dict]) -> tuple:
+    if not AUTO_CLEANUP_ENABLED:
+        return [], [], []
     client = oci.core.BlockstorageClient(config)
     compute_client = oci.core.ComputeClient(config)
     deleted, skipped, errors = [], [], []
@@ -1014,6 +1025,8 @@ def _cleanup_boot_volumes(config: dict, vols: List[dict]) -> tuple:
 
 
 def _cleanup_block_volumes(config: dict, vols: List[dict]) -> tuple:
+    if not AUTO_CLEANUP_ENABLED:
+        return [], []
     client = oci.core.BlockstorageClient(config)
     deleted, errors = [], []
     for v in vols:
@@ -1040,6 +1053,8 @@ def _keep_floor_images(imgs: List[dict]) -> List[dict]:
 
 
 def _cleanup_images(config: dict, images: List[dict]) -> tuple:
+    if not AUTO_CLEANUP_ENABLED:
+        return [], []
     client = oci.core.ComputeClient(config)
     deleted, errors = [], []
     for img in images:
@@ -1067,6 +1082,8 @@ def run_cleanup(
         "deleted_images": [],
         "errors": [],
     }
+    if not AUTO_CLEANUP_ENABLED:
+        return report
     if ips:
         d, e = _cleanup_ips(config, ips)
         report["deleted_ips"] = d
@@ -1820,30 +1837,33 @@ def handle_command(text: str, chat_id: str, key_file_path: str) -> None:
     elif cmd == "/cleanup":
         sub = parts[1] if len(parts) > 1 else ""
         if sub == "images":
-            try:
-                imgs = custom_images(config)
-                surplus = _keep_floor_images(imgs)
-                kept = [i for i in imgs if not i["in_use"] and i not in surplus]
-                if not surplus:
-                    reply = "✅ No surplus custom images found (golden floor kept)."
-                else:
-                    deleted, errors = _cleanup_images(config, surplus)
-                    lines = [f"🗑️ Deleted {len(deleted)} custom image(s):"]
-                    for img in deleted:
-                        lines.append(f"  • {img['name']} ({img['size_gb']} GB)")
-                    if kept:
-                        lines.append(
-                            f"\n🖼️ Kept {len(kept)} unused golden image(s) (1 per type)"
-                        )
-                    if errors:
-                        lines.append(f"\n⚠️ {len(errors)} failed:")
-                        for err in errors:
+            if not AUTO_CLEANUP_ENABLED:
+                reply = "🔒 Cleanup is disabled by deployment policy."
+            else:
+                try:
+                    imgs = custom_images(config)
+                    surplus = _keep_floor_images(imgs)
+                    kept = [i for i in imgs if not i["in_use"] and i not in surplus]
+                    if not surplus:
+                        reply = "✅ No surplus custom images found (golden floor kept)."
+                    else:
+                        deleted, errors = _cleanup_images(config, surplus)
+                        lines = [f"🗑️ Deleted {len(deleted)} custom image(s):"]
+                        for img in deleted:
+                            lines.append(f"  • {img['name']} ({img['size_gb']} GB)")
+                        if kept:
                             lines.append(
-                                f"  • {err['item']['name']}: {err['error'][:80]}"
+                                f"\n🖼️ Kept {len(kept)} unused golden image(s) (1 per type)"
                             )
-                    reply = "\n".join(lines)
-            except Exception as e:
-                reply = f"⚠️ Error: {_short_err(e)}"
+                        if errors:
+                            lines.append(f"\n⚠️ {len(errors)} failed:")
+                            for err in errors:
+                                lines.append(
+                                    f"  • {err['item']['name']}: {err['error'][:80]}"
+                                )
+                        reply = "\n".join(lines)
+                except Exception as e:
+                    reply = f"⚠️ Error: {_short_err(e)}"
         else:
             reply = "Usage: `/cleanup images`"
 

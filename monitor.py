@@ -15,12 +15,41 @@ from typing import Dict, List, Optional, Set, Tuple
 from prometheus_client import start_http_server, REGISTRY
 from prometheus_client.core import GaugeMetricFamily
 
-TENANCY_OCID = os.environ["OCI_TENANCY_OCID"]
-USER_OCID = os.environ["OCI_USER_OCID"]
-FINGERPRINT = os.environ["OCI_FINGERPRINT"]
-REGION = os.environ.get("OCI_REGION", "uk-london-1")
-API_KEY_PEM = os.environ["OCI_API_KEY"]
-COMPARTMENT_OCID = os.environ["OCI_COMPARTMENT_OCID"]
+OCI_AUTH_MODE = os.environ.get("OCI_AUTH_MODE", "environment").strip().lower()
+OCI_CONFIG_FILE = os.environ.get("OCI_CONFIG_FILE", "")
+OCI_PROFILE = os.environ.get("OCI_PROFILE", "DEFAULT")
+
+
+def _load_oci_profile_config() -> dict:
+    if not OCI_CONFIG_FILE:
+        raise RuntimeError("OCI_CONFIG_FILE is required for config_file authentication")
+    try:
+        return oci.config.from_file(
+            file_location=OCI_CONFIG_FILE,
+            profile_name=OCI_PROFILE,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"OCI profile could not be loaded ({type(exc).__name__})"
+        ) from None
+
+
+OCI_PROFILE_CONFIG = (
+    _load_oci_profile_config() if OCI_AUTH_MODE == "config_file" else {}
+)
+if OCI_AUTH_MODE == "config_file":
+    TENANCY_OCID = OCI_PROFILE_CONFIG.get("tenancy", "")
+    USER_OCID = OCI_PROFILE_CONFIG.get("user", "")
+    FINGERPRINT = OCI_PROFILE_CONFIG.get("fingerprint", "")
+    REGION = OCI_PROFILE_CONFIG.get("region", "")
+    API_KEY_PEM = ""
+else:
+    TENANCY_OCID = os.environ.get("OCI_TENANCY_OCID", "")
+    USER_OCID = os.environ.get("OCI_USER_OCID", "")
+    FINGERPRINT = os.environ.get("OCI_FINGERPRINT", "")
+    REGION = os.environ.get("OCI_REGION", "uk-london-1")
+    API_KEY_PEM = os.environ.get("OCI_API_KEY", "")
+COMPARTMENT_OCID = os.environ.get("OCI_COMPARTMENT_OCID", "")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 BOOT_VOLUME_CLEANUP_TAG = os.environ.get("BOOT_VOLUME_CLEANUP_TAG", "")
@@ -36,6 +65,8 @@ OCI_STATE_BUCKET = os.environ.get("OCI_STATE_BUCKET", "")
 OCI_ACCOUNT_LABEL = os.environ.get("OCI_ACCOUNT_LABEL", "")
 VAT_RATE = float(os.environ.get("VAT_RATE", "0.20"))
 METRICS_PORT = os.environ.get("METRICS_PORT", "")
+OCI_PRIVATE_PROBE_HOST = os.environ.get("OCI_PRIVATE_PROBE_HOST", "").strip()
+OCI_PRIVATE_PROBE_PORT = int(os.environ.get("OCI_PRIVATE_PROBE_PORT", "22"))
 COST_THRESHOLD_GBP = os.environ.get("COST_THRESHOLD_GBP")
 AUTO_CLEANUP_ENABLED = os.environ.get("AUTO_CLEANUP_ENABLED", "true").lower() not in (
     "0",
@@ -403,7 +434,57 @@ def check_oci_connectivity(attempts: int = 2) -> None:
     )
 
 
-def build_oci_config(key_file_path: str) -> dict:
+def _validate_environment_auth() -> None:
+    if OCI_CONFIG_FILE:
+        raise RuntimeError("OCI_CONFIG_FILE requires OCI_AUTH_MODE=config_file")
+    missing = [
+        name
+        for name, value in (
+            ("OCI_TENANCY_OCID", TENANCY_OCID),
+            ("OCI_USER_OCID", USER_OCID),
+            ("OCI_FINGERPRINT", FINGERPRINT),
+            ("OCI_API_KEY", API_KEY_PEM),
+            ("OCI_COMPARTMENT_OCID", COMPARTMENT_OCID),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Missing required OCI environment settings: {', '.join(missing)}"
+        )
+
+
+def build_oci_config(key_file_path: Optional[str] = None) -> dict:
+    if OCI_AUTH_MODE == "config_file":
+        legacy_values = (
+            "OCI_TENANCY_OCID",
+            "OCI_USER_OCID",
+            "OCI_FINGERPRINT",
+            "OCI_API_KEY",
+        )
+        if any(os.environ.get(name) for name in legacy_values):
+            raise RuntimeError(
+                "Config-file authentication conflicts with OCI credential environment settings"
+            )
+        config = dict(OCI_PROFILE_CONFIG)
+        required = ("tenancy", "user", "fingerprint", "region", "key_file")
+        missing = [name for name in required if not config.get(name)]
+        if missing:
+            raise RuntimeError(
+                f"OCI profile missing required fields: {', '.join(missing)}"
+            )
+        key_path = config["key_file"]
+        if not os.path.isfile(key_path) or not os.access(key_path, os.R_OK):
+            raise RuntimeError("OCI profile key file is missing or unreadable")
+        if not COMPARTMENT_OCID:
+            raise RuntimeError("OCI_COMPARTMENT_OCID is required")
+        return config
+
+    if OCI_AUTH_MODE != "environment":
+        raise RuntimeError("OCI_AUTH_MODE must be environment or config_file")
+    _validate_environment_auth()
+    if not key_file_path:
+        raise RuntimeError("OCI API key file is not configured")
     return {
         "user": USER_OCID,
         "key_file": key_file_path,
@@ -451,8 +532,10 @@ def accessible_compartments(config: dict) -> List[dict]:
             compartment_id_in_subtree=True,
             access_level="ACCESSIBLE",
         ).data
-    except Exception:
-        return [_configured_compartment()]
+    except Exception as exc:
+        raise RuntimeError(
+            f"OCI compartment discovery failed ({type(exc).__name__})"
+        ) from None
 
     result = []
     seen = set()
@@ -472,7 +555,11 @@ def accessible_compartments(config: dict) -> List[dict]:
             }
         )
 
-    return result or [_configured_compartment()]
+    if not result:
+        raise RuntimeError(
+            "OCI compartment discovery returned no accessible compartments"
+        )
+    return result
 
 
 def monthly_spend_breakdown(config: dict) -> tuple:
@@ -601,6 +688,16 @@ def ipsec_connections(config: dict) -> List[dict]:
     ]
 
 
+def unapproved_nat_gateways(items: List[dict]) -> List[dict]:
+    """Fail closed: only exact operator-approved resource identities are exempt."""
+    approved = {
+        value.strip()
+        for value in os.environ.get("APPROVED_NAT_GATEWAY_IDS", "").split(",")
+        if value.strip()
+    }
+    return [item for item in items if item["id"] not in approved]
+
+
 def nat_gateways(config: dict) -> List[dict]:
     client = oci.core.VirtualNetworkClient(config)
     items = oci.pagination.list_call_get_all_results(
@@ -672,6 +769,22 @@ def vpn_tunnel_alerts(config: dict, ipsec_list: List[dict]) -> List[str]:
         except Exception as e:
             notes.append(f"⚠️ VPN tunnel status unavailable ({ipsc['name']}): {e}")
     return classify_vpn_tunnels(tunnels) + notes
+
+
+def private_path_probe_alerts() -> List[str]:
+    """Check a real private OCI endpoint independently of OCI API reachability."""
+    if not OCI_PRIVATE_PROBE_HOST:
+        return []
+    try:
+        with socket.create_connection(
+            (OCI_PRIVATE_PROBE_HOST, OCI_PRIVATE_PROBE_PORT), timeout=5
+        ):
+            return []
+    except (OSError, ValueError, OverflowError) as exc:
+        return [
+            "⚠️ OCI private-path probe failed "
+            f"({OCI_PRIVATE_PROBE_HOST}:{OCI_PRIVATE_PROBE_PORT}; {type(exc).__name__})"
+        ]
 
 
 def classify_drg_routes(
@@ -857,8 +970,10 @@ def object_storage_usage_gb(config: dict) -> float:
                     start = resp.data.next_start_with
                 else:
                     break
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                f"Object Storage object listing failed ({type(exc).__name__})"
+            ) from None
     return total_bytes / 1024**3
 
 
@@ -1444,7 +1559,11 @@ def build_scan_message(key_file_path: str) -> str:
             lines.append("\n*Site-to-Site VPN*")
             lines.append(f"  • DRGs: {len(drg_list)}   IPSec: {len(ipsec_list)}")
             if nat_list:
-                lines.append(f"  • ⚠️ NAT Gateway: {len(nat_list)} (not approved)")
+                unexpected_nat = unapproved_nat_gateways(nat_list)
+                lines.append(
+                    f"  • NAT Gateways: {len(nat_list) - len(unexpected_nat)} approved, {len(unexpected_nat)} not approved"
+                    + (" ⚠️" if unexpected_nat else " ✅")
+                )
             if nlb_list:
                 lines.append(f"  • ⚠️ Network LB: {len(nlb_list)} (not approved)")
         else:
@@ -1514,12 +1633,16 @@ def check(key_file_path: str) -> None:
         return
 
     config = build_oci_config(key_file_path)
+    path_alerts = private_path_probe_alerts()
     try:
         check_oci_connectivity()
     except Exception as e:
         if not sget("network_failure_active"):
             name = _account_label or "OCI"
-            if notify(f"🚨 *{name} alert*\n⚠️ {e}\nResource checks skipped."):
+            path_detail = "\n" + "\n".join(path_alerts) if path_alerts else ""
+            if notify(
+                f"🚨 *{name} alert*\n⚠️ {e}{path_detail}\nResource checks skipped."
+            ):
                 sset("network_failure_active", True, config)
         update_metrics({"network_failure": 1})
         return
@@ -1533,11 +1656,12 @@ def check(key_file_path: str) -> None:
     auto = sget("auto_cleanup")
     alert_on_change = sget("alert_on_change")
     alerts = []
-    threshold_alerts = []
+    threshold_alerts = list(path_alerts)
     change_alerts = []
     spend: float | None = None
     spend_inc: float = 0.0
     currency = "GBP"
+    scan_succeeded = True
 
     try:
         spend, currency = monthly_spend(config)
@@ -1553,6 +1677,7 @@ def check(key_file_path: str) -> None:
             sset("last_spend_currency", currency, config)
         update_metrics({"spend_gbp_inc_vat": spend_inc})
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ Cost check failed: {e}")
 
     try:
@@ -1584,6 +1709,7 @@ def check(key_file_path: str) -> None:
             }
         )
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ Compute check failed: {e}")
 
     try:
@@ -1604,6 +1730,7 @@ def check(key_file_path: str) -> None:
             )
         update_metrics({"lb_count": count, "lb_empty": len(empty)})
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ LB check failed: {e}")
 
     ips, boot_vols, block_vols = [], [], []
@@ -1613,6 +1740,7 @@ def check(key_file_path: str) -> None:
             threshold_alerts.append(f"🌐 Unassigned reserved IPs: {len(ips)}")
         update_metrics({"orphaned_public_ips": len(ips)})
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ Public IP check failed: {e}")
 
     try:
@@ -1628,6 +1756,7 @@ def check(key_file_path: str) -> None:
             }
         )
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ Volume check failed: {e}")
 
     try:
@@ -1641,6 +1770,7 @@ def check(key_file_path: str) -> None:
             {"volume_backups": len(backups), "volume_backup_bytes": backup_gb * 1e9}
         )
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ Backup check failed: {e}")
 
     imgs: List[dict] = []
@@ -1656,6 +1786,7 @@ def check(key_file_path: str) -> None:
             {"unused_images": len(unused_imgs), "unused_image_bytes": unused_gb * 1e9}
         )
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ Image check failed: {e}")
 
     try:
@@ -1667,14 +1798,16 @@ def check(key_file_path: str) -> None:
             )
         update_metrics({"object_storage_bytes": usage_gb * 1e9})
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ Object Storage check failed: {e}")
 
     try:
         drg_list = drgs(config)
         ipsec_list = ipsec_connections(config)
-        if nat_gateways(config):
+        unexpected_nat = unapproved_nat_gateways(nat_gateways(config))
+        if unexpected_nat:
             threshold_alerts.append(
-                "🚧 NAT Gateway present (not approved for VPN path)"
+                f"🚧 NAT Gateway present (not approved for VPN path): {len(unexpected_nat)}"
             )
         if network_load_balancers(config):
             threshold_alerts.append("⚖️ Network Load Balancer present (not approved)")
@@ -1687,6 +1820,7 @@ def check(key_file_path: str) -> None:
             )
         update_metrics({"drg_count": len(drg_list), "ipsec_count": len(ipsec_list)})
     except Exception as e:
+        scan_succeeded = False
         threshold_alerts.append(f"⚠️ VPN check failed: {e}")
 
     # Gate change_alerts on state change (existing behaviour)
@@ -1712,12 +1846,12 @@ def check(key_file_path: str) -> None:
 
     cleanup_note = ""
     surplus_images: List[dict] = []
-    if auto:
+    if auto and scan_succeeded:
         try:
             surplus_images = _keep_floor_images(imgs)
         except Exception:
             surplus_images = []
-    if auto and (ips or boot_vols or block_vols or surplus_images):
+    if auto and scan_succeeded and (ips or boot_vols or block_vols or surplus_images):
         try:
             report = run_cleanup(config, ips, boot_vols, block_vols, surplus_images)
             _save_report_to_bucket(config, report)
@@ -1757,7 +1891,8 @@ def check(key_file_path: str) -> None:
             except Exception as e:
                 notify(f"⚠️ EOM invoice preview failed: {e}")
 
-    update_metrics({"last_scan_ts": time.time()})
+    if scan_succeeded:
+        update_metrics({"last_scan_ts": time.time()})
 
 
 # ── command handler ───────────────────────────────────────────────────────────
@@ -1916,25 +2051,42 @@ def poll_commands(key_file_path: str) -> None:
 def main() -> None:
     global _tenancy_slug, _account_label, _availability_domains, _os_namespace
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
-        f.write(API_KEY_PEM)
-        key_file_path = f.name
-
+    key_file_path = None
+    temporary_key_file = False
     try:
-        config = build_oci_config(key_file_path)
+        if OCI_AUTH_MODE == "config_file":
+            config = build_oci_config()
+            key_file_path = config["key_file"]
+        elif OCI_AUTH_MODE == "environment":
+            _validate_environment_auth()
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".pem", delete=False
+            ) as f:
+                f.write(API_KEY_PEM)
+                key_file_path = f.name
+            temporary_key_file = True
+            config = build_oci_config(key_file_path)
+        else:
+            config = build_oci_config()
 
         try:
             _tenancy_slug, _account_label = fetch_tenancy_info(config)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                f"OCI identity preflight failed ({type(exc).__name__})"
+            ) from None
         try:
             _availability_domains = fetch_availability_domains(config)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                f"OCI availability-domain preflight failed ({type(exc).__name__})"
+            ) from None
         try:
             _os_namespace = fetch_os_namespace(config)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                f"OCI Object Storage namespace preflight failed ({type(exc).__name__})"
+            ) from None
 
         load_state(config)
         load_metrics()
@@ -1944,10 +2096,12 @@ def main() -> None:
             start_http_server(int(METRICS_PORT))
 
         if BOT_TOKEN and CHAT_ID:
+            assert key_file_path is not None
             threading.Thread(
                 target=poll_commands, args=(key_file_path,), daemon=True
             ).start()
 
+        assert key_file_path is not None
         while True:
             try:
                 check(key_file_path)
@@ -1955,7 +2109,8 @@ def main() -> None:
                 notify(f"⚠️ *OCI monitor error*: {e}")
             time.sleep(INTERVAL_HOURS * 3600)
     finally:
-        os.unlink(key_file_path)
+        if temporary_key_file and key_file_path:
+            os.unlink(key_file_path)
 
 
 if __name__ == "__main__":
